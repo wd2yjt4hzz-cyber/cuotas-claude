@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MUNDIAL26 AI ANALYTICS · Predicciones y Value Bets</title>
+<meta name="description" content="Análisis y predicción de apuestas para el Mundial 2026. Probabilidades, value bets, EV y estadísticas en tiempo real.">
+
+<!-- Tipografías: Oswald (marcador/condensada) + Inter (texto) + JetBrains Mono (datos/cuotas) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="style.css">
+
+<!-- Chart.js para los gráficos del dashboard (CDN, sin necesidad de build) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" defer></script>
+<script src="script.js" defer></script>
+</head>
+<body>
+
+<!-- ===================== TICKER SUPERIOR (estilo bolsa/sportsbook) ===================== -->
+<div class="ticker" aria-hidden="true">
+  <div class="ticker-track" id="tickerTrack">
+    <!-- Se rellena dinámicamente con las mejores value bets del día -->
+    <span class="ticker-item">Cargando datos del Mundial 2026…</span>
+  </div>
+</div>
+
+<!-- ===================== CABECERA ===================== -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark">⚽</span>
+    <div class="brand-text">
+      <span class="brand-name">MUNDIAL<em>26</em></span>
+      <span class="brand-sub">AI ANALYTICS &amp; VALUE BETS</span>
+    </div>
+  </div>
+
+  <div class="topbar-actions">
+    <div class="search-box">
+      <svg viewBox="0 0 24 24" class="icon-search"><path d="M21 21l-4.3-4.3m1.8-5.2a7 7 0 11-14 0 7 7 0 0114 0z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input type="text" id="searchInput" placeholder="Buscar selección o partido…" autocomplete="off">
+    </div>
+    <button id="refreshBtn" class="btn btn-primary">
+      <span class="refresh-icon">↻</span> Actualizar datos
+    </button>
+    <button id="settingsBtn" class="btn btn-ghost" title="Configurar fuentes de datos / API keys" aria-label="Configuración">⚙</button>
+  </div>
+</header>
+
+<div id="liveBanner" class="live-banner hidden"></div>
+
+<main>
+
+  <!-- ===================== RESUMEN DASHBOARD ===================== -->
+  <section class="dashboard-stats" id="dashboardStats">
+    <!-- Tarjetas de resumen generadas por JS: partidos hoy, value bets, EV medio, confianza media -->
+  </section>
+
+  <!-- ===================== BARRA DE CONTROLES ===================== -->
+  <section class="controls-bar">
+    <div class="control-group">
+      <label for="marketFilter">Mercado</label>
+      <select id="marketFilter">
+        <option value="all">Todos los mercados</option>
+        <option value="1x2">Resultado 1X2</option>
+        <option value="goals">Total de goles (Over/Under)</option>
+        <option value="btts">Ambos marcan</option>
+        <option value="corners">Córners</option>
+        <option value="cards">Tarjetas</option>
+        <option value="scorer">Primer goleador</option>
+        <option value="correct_score">Resultado exacto</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label for="dateFilter">Jornada</label>
+      <select id="dateFilter">
+        <!-- Generado por JS según los partidos disponibles -->
+      </select>
+    </div>
+
+    <div class="sort-group" role="group" aria-label="Ordenar partidos">
+      <span class="sort-label">Ordenar:</span>
+      <button data-sort="time" class="sort-btn">Hora</button>
+      <button data-sort="confidence" class="sort-btn active">Confianza</button>
+      <button data-sort="ev" class="sort-btn">EV</button>
+    </div>
+  </section>
+
+  <!-- ===================== GRID DE PARTIDOS ===================== -->
+  <section class="section-block">
+    <div class="section-heading">
+      <h2>Partidos analizados</h2>
+      <span class="section-count" id="matchCount"></span>
+    </div>
+    <div class="matches-grid" id="matchesGrid">
+      <!-- Tarjetas de partido generadas por JS -->
+    </div>
+    <p class="empty-state hidden" id="emptyState">No se encontraron partidos con ese filtro o búsqueda.</p>
+  </section>
+
+  <!-- ===================== MEJORES APUESTAS DEL DÍA ===================== -->
+  <section class="panel best-bets" id="bestBetsPanel">
+    <div class="section-heading">
+      <h2>🏆 Mejores apuestas del día</h2>
+      <span class="section-sub">Ordenadas por valor esperado (EV)</span>
+    </div>
+    <div class="table-wrap">
+      <table id="bestBetsTable">
+        <thead>
+          <tr>
+            <th>Partido</th>
+            <th>Mercado</th>
+            <th>Selección</th>
+            <th>Prob. modelo</th>
+            <th>Cuota</th>
+            <th>Cuota justa</th>
+            <th>Edge</th>
+            <th>EV</th>
+            <th>Riesgo</th>
+          </tr>
+        </thead>
+        <tbody id="bestBetsBody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ===================== DASHBOARD DE GRÁFICOS ===================== -->
+  <section class="panel charts-panel">
+    <div class="section-heading">
+      <h2>📊 Panel analítico</h2>
+      <span class="section-sub">Visión global de la jornada</span>
+    </div>
+    <div class="charts-grid">
+      <div class="chart-card">
+        <h3>Confianza del modelo por partido</h3>
+        <canvas id="chartConfidence"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Top EV por apuesta</h3>
+        <canvas id="chartEV"></canvas>
+      </div>
+      <div class="chart-card">
+        <h3>Distribución de riesgo</h3>
+        <canvas id="chartRisk"></canvas>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ===================== MODAL: DETALLE DE PARTIDO ===================== -->
+<div id="matchModal" class="modal-overlay hidden">
+  <div class="modal modal-large">
+    <button class="modal-close" id="modalClose" aria-label="Cerrar">✕</button>
+    <div id="modalContent"><!-- Generado por JS --></div>
+  </div>
+</div>
+
+<!-- ===================== MODAL: CONFIGURACIÓN / API KEYS ===================== -->
+<div id="settingsModal" class="modal-overlay hidden">
+  <div class="modal">
+    <button class="modal-close" id="settingsClose" aria-label="Cerrar">✕</button>
+    <h2>⚙ Fuentes de datos</h2>
+    <p class="settings-intro">
+      Bet365, SofaScore, Flashscore, FotMob y FBref no ofrecen una API pública para frontend y
+      bloquean las peticiones directas por CORS. Esta app usa por defecto un
+      <strong>motor de simulación estadística</strong> calibrado con el nivel de cada selección
+      (modo demo, totalmente funcional sin claves). Si quieres datos en vivo reales, introduce
+      claves gratuitas de las siguientes APIs públicas:
+    </p>
+
+    <div class="settings-field">
+      <label for="oddsApiKey">The Odds API (cuotas de casas de apuestas, incluye Bet365 según región)</label>
+      <input type="text" id="oddsApiKey" placeholder="Pega aquí tu API key de the-odds-api.com">
+      <a href="https://the-odds-api.com/" target="_blank" rel="noopener">Obtener clave gratuita →</a>
+    </div>
+
+    <div class="settings-field">
+      <label for="footballDataApiKey">football-data.org (calendario y resultados)</label>
+      <input type="text" id="footballDataApiKey" placeholder="Pega aquí tu API key de football-data.org">
+      <a href="https://www.football-data.org/" target="_blank" rel="noopener">Obtener clave gratuita →</a>
+    </div>
+
+    <label class="settings-toggle">
+      <input type="checkbox" id="liveModeToggle">
+      Intentar usar datos en vivo si hay claves configuradas
+    </label>
+
+    <div class="settings-actions">
+      <button id="saveSettingsBtn" class="btn btn-primary">Guardar y actualizar</button>
+      <button id="clearSettingsBtn" class="btn btn-ghost">Borrar claves</button>
+    </div>
+
+    <p class="settings-note">
+      Las claves se guardan únicamente en el <code>localStorage</code> de tu navegador. Nunca se
+      envían a ningún servidor de terceros salvo a la propia API que elijas.
+    </p>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <p>
+    MUNDIAL26 AI Analytics — Proyecto educativo de análisis estadístico. Las predicciones se
+    generan con un modelo propio (distribución de Poisson + scoring ponderado) y no garantizan
+    resultados. No constituye asesoramiento financiero ni recomendación de apuesta real.
+  </p>
+  <p class="footer-disclaimer">🔞 Juega con responsabilidad. Si las apuestas dejan de ser un entretenimiento, busca ayuda profesional.</p>
+</footer>
+
+</body>
+</html>
