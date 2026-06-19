@@ -1,39 +1,193 @@
 <!DOCTYPE html>
 <html lang="es" data-theme="dark">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MUNDIAL26 AI ANALYTICS · Predicciones y Value Bets</title>
-<meta name="description" content="Análisis y predicción de apuestas para el Mundial 2026. Probabilidades, value bets, EV y estadísticas en tiempo real.">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MUNDIAL26 AI ANALYTICS · Predicciones seguras</title>
+  <meta name="description" content="Análisis estadístico seguro para el Mundial 2026. Probabilidades, mercados sencillos y explicación basada en datos.">
 
-<!-- Tipografías: Oswald (marcador/condensada) + Inter (texto) + JetBrains Mono (datos/cuotas) -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Tipografías -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-<link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css">
 
-<!-- Chart.js para los gráficos del dashboard (CDN, sin necesidad de build) -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" defer></script>
-<script src="script.js" defer></script>
+  <!-- Chart.js (puedes dejarlo si luego quieres gráficos, pero ya no es obligatorio) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js" defer></script>
+  <script src="script.js" defer></script>
 </head>
 <body>
 
-<!-- ===================== TICKER SUPERIOR (estilo bolsa/sportsbook) ===================== -->
-<div class="ticker" aria-hidden="true">
-  <div class="ticker-track" id="tickerTrack">
-    <!-- Se rellena dinámicamente con las mejores value bets del día -->
-    <span class="ticker-item">Cargando datos del Mundial 2026…</span>
+  <!-- ===================== TICKER SUPERIOR ===================== -->
+  <div class="ticker" aria-hidden="true">
+    <div class="ticker-track" id="tickerTrack">
+      <!-- Ahora deja claro que los datos son simulados si no hay API -->
+      <span class="ticker-item">MUNDIAL26 AI · Modo demo estadístico — datos simulados marcados visualmente en la interfaz.</span>
+    </div>
   </div>
-</div>
 
-<!-- ===================== CABECERA ===================== -->
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">⚽</span>
-    <div class="brand-text">
-      <span class="brand-name">MUNDIAL<em>26</em></span>
-      <span class="brand-sub">AI ANALYTICS &amp; VALUE BETS</span>
+  <!-- ===================== CABECERA ===================== -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">⚽</span>
+      <div class="brand-text">
+        <span class="brand-name">MUNDIAL<em>26</em></span>
+        <span class="brand-sub">AI ANALYTICS · MODO SEGURO</span>
+      </div>
+    </div>
+
+    <div class="topbar-actions">
+      <div class="search-box">
+        <svg viewBox="0 0 24 24" class="icon-search">
+          <path d="M21 21l-4.3-4.3m1.8-5.2a7 7 0 11-14 0 7 7 0 0114 0z"
+                fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <input type="text" id="searchInput" placeholder="Buscar selección (solo visual, sin filtrar)" autocomplete="off">
+      </div>
+      <button id="refreshBtn" class="btn btn-primary">
+        <span class="refresh-icon">↻</span> Actualizar datos
+      </button>
+      <button id="settingsBtn" class="btn btn-ghost" title="Configurar fuentes de datos / API keys" aria-label="Configuración">⚙</button>
+    </div>
+  </header>
+
+  <!-- Banner de modo demo / datos en vivo -->
+  <div id="liveBanner" class="live-banner"></div>
+
+  <main>
+
+    <!-- ===================== RESUMEN DASHBOARD ===================== -->
+    <section class="dashboard-stats" id="dashboardStats">
+      <!-- Ejemplo de tarjetas simples: se rellenan o ajustan por JS si quieres -->
+      <article class="stat-card" style="--stat-accent: var(--accent-pitch);">
+        <div class="stat-label">Fecha analizada</div>
+        <div class="stat-value" id="statDate">—</div>
+        <div class="stat-sub">Se usa siempre la fecha actual del sistema al pulsar "Actualizar datos".</div>
+      </article>
+
+      <article class="stat-card" style="--stat-accent: var(--accent-blue);">
+        <div class="stat-label">Partidos disponibles</div>
+        <div class="stat-value" id="statMatches">—</div>
+        <div class="stat-sub">Selecciona un partido en el menú desplegable para ver el análisis.</div>
+      </article>
+
+      <article class="stat-card" style="--stat-accent: var(--accent-gold);">
+        <div class="stat-label">Modo de riesgo</div>
+        <div class="stat-value">SEGURO</div>
+        <div class="stat-sub">Solo mercados sencillos y probabilidad ≥ 75%.</div>
+      </article>
+    </section>
+
+    <!-- ===================== BARRA DE CONTROLES (PARTIDO ÚNICO) ===================== -->
+    <section class="controls-bar">
+      <div class="control-group">
+        <label for="matchSelect">Partido</label>
+        <select id="matchSelect">
+          <!-- Se rellena por JS con los partidos de la fecha actual -->
+        </select>
+      </div>
+
+      <div class="control-group">
+        <label>Modo de análisis</label>
+        <p class="control-helper">
+          Se priorizan mercados de goles, doble oportunidad y córners. Sin apuestas locas a ganador de equipo débil.
+        </p>
+      </div>
+    </section>
+
+    <!-- ===================== ANÁLISIS DEL PARTIDO SELECCIONADO ===================== -->
+    <section class="section-block">
+      <div class="section-heading">
+        <h2>Análisis del partido seleccionado</h2>
+        <span class="section-count" id="matchCount"></span>
+      </div>
+
+      <div id="analysisContainer" class="analysis-container">
+        <!-- El JS inserta aquí:
+             - Cabecera del partido (equipos, grupo, estadio, xG)
+             - Lista de recomendaciones con estrellas y explicación -->
+      </div>
+
+      <p class="empty-state hidden" id="emptyState">
+        No hay partidos para la fecha actual o no se pudo cargar el calendario.
+      </p>
+    </section>
+
+    <!-- ===================== PANEL DE AYUDA / CONFIGURACIÓN ===================== -->
+    <section class="panel info-panel">
+      <div class="section-heading">
+        <h2>ℹ️ Fuentes de datos y modo demo</h2>
+        <span class="section-sub">Integración preparada para API tipo SofaScore / The Odds API</span>
+      </div>
+      <p>
+        Esta aplicación funciona 100% en frontend (HTML + CSS + JS) y está pensada para GitHub Pages.
+        Por defecto usa un motor de simulación estadística calibrado con el nivel de cada selección.
+        Todo dato simulado se marca visualmente como tal en la interfaz.
+      </p>
+      <p>
+        En el archivo <code>script.js</code> encontrarás una constante
+        <code>API_KEY = "TU_CLAVE_AQUI"</code> y la estructura de <em>fetch</em> preparada
+        para conectar con una API de deportes (estilo SofaScore). Sustituye esa clave por la tuya
+        y ajusta la URL base al proveedor que elijas.
+      </p>
+    </section>
+
+  </main>
+
+  <!-- ===================== MODAL: CONFIGURACIÓN / API KEYS ===================== -->
+  <div id="settingsModal" class="modal-overlay hidden">
+    <div class="modal">
+      <button class="modal-close" id="settingsClose" aria-label="Cerrar">✕</button>
+      <h2>⚙ Fuentes de datos</h2>
+      <p class="settings-intro">
+        Bet365, SofaScore, Flashscore, FotMob y FBref no ofrecen una API pública para frontend y
+        bloquean las peticiones directas por CORS. Esta app usa por defecto un
+        <strong>motor de simulación estadística</strong> calibrado con el nivel de cada selección
+        (modo demo, totalmente funcional sin claves). Si quieres datos en vivo reales, introduce
+        claves gratuitas de las siguientes APIs públicas:
+      </p>
+
+      <div class="settings-field">
+        <label for="oddsApiKey">The Odds API (cuotas de casas de apuestas)</label>
+        <input type="text" id="oddsApiKey" placeholder="Pega aquí tu API key de the-odds-api.com">
+        <a href="https://the-odds-api.com/" target="_blank" rel="noopener">Obtener clave gratuita →</a>
+      </div>
+
+      <div class="settings-field">
+        <label for="footballDataApiKey">football-data.org (calendario y resultados)</label>
+        <input type="text" id="footballDataApiKey" placeholder="Pega aquí tu API key de football-data.org">
+        <a href="https://www.football-data.org/" target="_blank" rel="noopener">Obtener clave gratuita →</a>
+      </div>
+
+      <label class="settings-toggle">
+        <input type="checkbox" id="liveModeToggle">
+        Intentar usar datos en vivo si hay claves configuradas
+      </label>
+
+      <div class="settings-actions">
+        <button id="saveSettingsBtn" class="btn btn-primary">Guardar y actualizar</button>
+        <button id="clearSettingsBtn" class="btn btn-ghost">Borrar claves</button>
+      </div>
+
+      <p class="settings-note">
+        Las claves se guardan únicamente en el <code>localStorage</code> de tu navegador. Nunca se
+        envían a ningún servidor de terceros salvo a la propia API que elijas.
+      </p>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <p>
+      MUNDIAL26 AI Analytics — Proyecto educativo de análisis estadístico. Las predicciones se
+      generan con un modelo propio (distribución de Poisson + scoring ponderado) y no garantizan
+      resultados. No constituye asesoramiento financiero ni recomendación de apuesta real.
+    </p>
+    <p class="footer-disclaimer">🔞 Juega con responsabilidad. Si las apuestas dejan de ser un entretenimiento, busca ayuda profesional.</p>
+  </footer>
+
+</body>
+</html>
     </div>
   </div>
 
