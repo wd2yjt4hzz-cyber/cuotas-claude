@@ -1,10 +1,5 @@
 /* ===========================================================================
-   MUNDIAL26 AI ANALYTICS — script.js (versión reestructurada)
-   ===========================================================================
-   - Frontend puro (HTML + CSS + JS), pensado para GitHub Pages.
-   - Integración preparada para API tipo SofaScore (fixtures y estadísticas).
-   - Análisis ultra-seguro: solo mercados sencillos y probabilidad >= 75%.
-   - Interfaz centrada en un único partido seleccionado por <select>.
+   MUNDIAL26 AI ANALYTICS — script.js (modo seguro, manteniendo tu UI original)
    =========================================================================== */
 
 (() => {
@@ -33,17 +28,11 @@
     MAX_GOALS: 6
   };
 
-  /* =========================================================================
-     2. UTILIDADES
-     ========================================================================= */
-
-  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-  function round1(v) { return Math.round(v * 10) / 10; }
-  function round2(v) { return Math.round(v * 100) / 100; }
-
-  // Factoriales precalculados 0..12 para Poisson
   const FACTORIALS = [1];
   for (let i = 1; i <= 12; i++) FACTORIALS.push(FACTORIALS[i - 1] * i);
+
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function round2(v) { return Math.round(v * 100) / 100; }
 
   function poissonPMF(k, lambda) {
     return (Math.exp(-lambda) * Math.pow(lambda, k)) / FACTORIALS[k];
@@ -73,16 +62,21 @@
   }
 
   function starsFromProb(prob) {
-    // Probabilidad 0.75–0.80 => 3 estrellas
-    // 0.80–0.87 => 4 estrellas
-    // >0.87 => 5 estrellas
     if (prob >= 0.87) return '⭐⭐⭐⭐⭐';
     if (prob >= 0.80) return '⭐⭐⭐⭐';
     return '⭐⭐⭐';
   }
 
+  function poissonOverProb(lambda, threshold) {
+    let pUnder = 0;
+    for (let k = 0; k <= Math.floor(threshold); k++) {
+      pUnder += poissonPMF(k, lambda);
+    }
+    return clamp(1 - pUnder, 0.01, 0.99);
+  }
+
   /* =========================================================================
-     3. BASE DE DATOS LOCAL (FALLBACK / MODO DEMO)
+     2. BASE DE DATOS LOCAL (FALLBACK / MODO DEMO)
      ========================================================================= */
 
   const TEAM_META = {
@@ -193,17 +187,14 @@
   ];
 
   /* =========================================================================
-     4. CAPA DE DATOS — INTEGRACIÓN CON API + FALLBACK LOCAL
+     3. CAPA DE DATOS — API + FALLBACK
      ========================================================================= */
 
   async function fetchFixturesFromApiByDate(targetDate) {
-    // Esta función está preparada para una API tipo SofaScore.
-    // Ajusta la URL, parámetros y parsing según tu proveedor real.
     const dateStr = targetDate.toISOString().slice(0, 10); // YYYY-MM-DD
     const url = `${API_BASE_URL}/football/matches?date=${dateStr}&apiKey=${encodeURIComponent(API_KEY)}`;
 
     if (!API_KEY || API_KEY === "TU_CLAVE_AQUI") {
-      // Sin clave real: devolvemos null para usar fallback local.
       return null;
     }
 
@@ -212,7 +203,6 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
-      // Adapta este mapeo a la estructura real de tu API:
       const fixtures = (data.matches || []).map((m, idx) => ({
         id: m.id ? String(m.id) : `api-${idx}`,
         date: m.kickoffTime || m.startTime || m.utcDate,
@@ -236,13 +226,10 @@
   }
 
   async function getFixturesForDate(targetDate) {
-    // 1) Intentar API real
     const apiFixtures = await fetchFixturesFromApiByDate(targetDate);
     if (apiFixtures && apiFixtures.length) {
       return { fixtures: apiFixtures, usingLive: true };
     }
-
-    // 2) Fallback local
     const fb = getFallbackFixturesForDate(targetDate);
     return { fixtures: fb, usingLive: false };
   }
@@ -250,7 +237,6 @@
   function getTeamStats(teamName) {
     const meta = TEAM_META[teamName];
     if (!meta) {
-      // Equipo desconocido: valores neutros
       return {
         name: teamName,
         code: teamName.slice(0, 3).toUpperCase(),
@@ -273,7 +259,7 @@
   }
 
   /* =========================================================================
-     5. MOTOR DE PREDICCIÓN ULTRA-SEGURO
+     4. MOTOR DE PREDICCIÓN ULTRA-SEGURO
      ========================================================================= */
 
   function buildScoreMatrix(lambdaHome, lambdaAway) {
@@ -319,19 +305,11 @@
     };
   }
 
-  function poissonOverProb(lambda, threshold) {
-    let pUnder = 0;
-    for (let k = 0; k <= Math.floor(threshold); k++) {
-      pUnder += poissonPMF(k, lambda);
-    }
-    return clamp(1 - pUnder, 0.01, 0.99);
-  }
-
   function buildSafeRecommendations(fixture, homeStats, awayStats, goals, corners) {
     const recs = [];
 
     function pushRec(type, label, prob, explanation) {
-      if (prob < 0.75) return; // modo ultra-seguro: solo >= 75%
+      if (prob < 0.75) return; // modo ultra-seguro
       recs.push({
         type,
         label,
@@ -341,9 +319,9 @@
       });
     }
 
-    // Mercados de goles (Más/Menos)
+    // Goles
     pushRec(
-      'goles',
+      'goals',
       'Más de 1.5 goles',
       goals.pOver15,
       `El modelo estima una probabilidad del ${(goals.pOver15 * 100).toFixed(1)}% de ver al menos 2 goles. ` +
@@ -351,7 +329,7 @@
     );
 
     pushRec(
-      'goles',
+      'goals',
       'Menos de 2.5 goles',
       goals.pUnder25,
       `La probabilidad de que haya 2 goles o menos es del ${(goals.pUnder25 * 100).toFixed(1)}%. ` +
@@ -360,7 +338,7 @@
 
     // Doble oportunidad (sin recomendar victorias locas de equipos débiles)
     pushRec(
-      'doble oportunidad',
+      'double_chance',
       `1X (Gana ${homeStats.name} o Empate)`,
       goals.p1X,
       `La doble oportunidad 1X cubre victoria local o empate con una probabilidad estimada del ${(goals.p1X * 100).toFixed(1)}%. ` +
@@ -368,20 +346,20 @@
     );
 
     pushRec(
-      'doble oportunidad',
+      'double_chance',
       `X2 (Empate o Gana ${awayStats.name})`,
       goals.pX2,
       `La doble oportunidad X2 cubre empate o victoria visitante con una probabilidad del ${(goals.pX2 * 100).toFixed(1)}%. ` +
       `${awayStats.name} promedia ${awayStats.xgFor.toFixed(2)} xG a favor y ${homeStats.name} encaja ${homeStats.xgAgainst.toFixed(2)} xG.`
     );
 
-    // Córners (Más/Menos)
+    // Córners
     const totalCornersLambda = corners.home + corners.away;
     const pOver85 = poissonOverProb(totalCornersLambda, 8.5);
     const pUnder105 = 1 - poissonOverProb(totalCornersLambda, 10.5);
 
     pushRec(
-      'córners',
+      'corners',
       'Más de 8.5 córners',
       pOver85,
       `Se espera un total medio de ${totalCornersLambda.toFixed(1)} córners ( ${homeStats.name}: ${corners.home.toFixed(1)}, ` +
@@ -389,7 +367,7 @@
     );
 
     pushRec(
-      'córners',
+      'corners',
       'Menos de 10.5 córners',
       pUnder105,
       `Con un promedio conjunto de ${totalCornersLambda.toFixed(1)} córners, la probabilidad de quedarse en 10 o menos es del ${(pUnder105 * 100).toFixed(1)}%. ` +
@@ -403,7 +381,6 @@
     const home = getTeamStats(fixture.home);
     const away = getTeamStats(fixture.away);
 
-    // Lambdas de goles esperados
     const attHome = home.xgFor / MODEL.LEAGUE_AVG_XG;
     const defHome = home.xgAgainst / MODEL.LEAGUE_AVG_XG;
     const attAway = away.xgFor / MODEL.LEAGUE_AVG_XG;
@@ -425,6 +402,10 @@
 
     const recommendations = buildSafeRecommendations(fixture, home, away, goals, corners);
 
+    // Para tu UI original: una “mejor pick” por partido (la más segura)
+    const bestPick = recommendations[0] || null;
+    const confidence = bestPick ? bestPick.prob : 0.5;
+
     return {
       fixture,
       home,
@@ -433,12 +414,14 @@
       lambdaAway: round2(lambdaAway),
       goals,
       corners,
-      recommendations
+      recommendations,
+      bestPick,
+      confidence
     };
   }
 
   /* =========================================================================
-     6. ESTADO DE LA APP
+     5. ESTADO DE LA APP
      ========================================================================= */
 
   const App = {
@@ -446,17 +429,21 @@
     fixtures: [],
     analyses: [],
     usingLiveData: false,
+    sortBy: 'confidence',
+    marketFilter: 'all',
+    searchTerm: '',
     selectedMatchId: null
   };
 
   /* =========================================================================
-     7. RENDERIZADO
+     6. RENDERIZADO UI (RESPETA TU HTML/CSS ORIGINAL)
      ========================================================================= */
 
   function renderLiveBanner() {
     const banner = document.getElementById('liveBanner');
     if (!banner) return;
 
+    banner.classList.remove('hidden');
     if (App.usingLiveData) {
       banner.textContent = '🟢 Datos en vivo activos (API externa configurada).';
     } else {
@@ -464,99 +451,322 @@
     }
   }
 
-  function populateMatchSelect() {
-    const select = document.getElementById('matchSelect');
-    if (!select) return;
+  function renderDashboardStats() {
+    const statDate = document.getElementById('statDate');
+    const statMatches = document.getElementById('statMatches');
 
-    select.innerHTML = '';
-
-    if (!App.fixtures.length) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'No hay partidos para esta fecha';
-      select.appendChild(opt);
-      App.selectedMatchId = null;
-      return;
+    if (statDate && App.currentDate) {
+      statDate.textContent = App.currentDate.toLocaleDateString('es-ES', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
     }
-
-    App.fixtures.forEach(f => {
-      const opt = document.createElement('option');
-      opt.value = f.id;
-      opt.textContent = `${f.home} vs ${f.away} — ${formatKickoff(f.date)}`;
-      select.appendChild(opt);
-    });
-
-    // Seleccionar el primero por defecto
-    App.selectedMatchId = App.fixtures[0].id;
-    select.value = App.selectedMatchId;
+    if (statMatches) {
+      statMatches.textContent = App.fixtures.length.toString();
+    }
   }
 
-  function renderSelectedMatch() {
-    const container = document.getElementById('analysisContainer');
-    if (!container) return;
+  function getFilteredAnalyses() {
+    let list = [...App.analyses];
 
-    container.innerHTML = '';
-
-    if (!App.selectedMatchId) {
-      container.textContent = 'Selecciona un partido para ver el análisis.';
-      return;
+    if (App.marketFilter !== 'all') {
+      list = list.map(a => ({
+        ...a,
+        recommendations: a.recommendations.filter(r => {
+          if (App.marketFilter === 'goals') return r.type === 'goals';
+          if (App.marketFilter === 'corners') return r.type === 'corners';
+          if (App.marketFilter === '1x2' || App.marketFilter === 'btts' || App.marketFilter === 'cards' || App.marketFilter === 'scorer' || App.marketFilter === 'correct_score') {
+            return false; // no recomendamos estos en modo seguro
+          }
+          return true;
+        })
+      }));
     }
 
-    const analysis = App.analyses.find(a => a.fixture.id === App.selectedMatchId);
-    if (!analysis) {
-      container.textContent = 'No se encontró el análisis para el partido seleccionado.';
-      return;
+    if (App.searchTerm) {
+      const term = App.searchTerm.toLowerCase();
+      list = list.filter(a =>
+        a.home.name.toLowerCase().includes(term) ||
+        a.away.name.toLowerCase().includes(term)
+      );
     }
 
-    const { fixture, home, away, lambdaHome, lambdaAway, recommendations } = analysis;
+    if (App.sortBy === 'time') {
+      list.sort((a, b) => new Date(a.fixture.date) - new Date(b.fixture.date));
+    } else if (App.sortBy === 'confidence') {
+      list.sort((a, b) => (b.confidence || 0) - (a.confidence || 0));
+    }
 
-    const header = document.createElement('div');
-    header.className = 'match-header';
-    header.innerHTML = `
-      <h2>${home.flag} ${home.name} vs ${away.flag} ${away.name}</h2>
-      <p class="match-meta">
-        ${formatKickoff(fixture.date)} · Grupo ${fixture.group || '-'} · ${fixture.city || ''} · ${fixture.stadium || ''}
-      </p>
-      <p class="match-xg">
-        Goles esperados (modelo): ${home.name} ${lambdaHome.toFixed(2)} — ${lambdaAway.toFixed(2)} ${away.name}
-      </p>
-    `;
+    return list;
+  }
 
-    const recBlock = document.createElement('div');
-    recBlock.className = 'recommendations';
+  function renderMatchesGrid() {
+    const grid = document.getElementById('matchesGrid');
+    const countEl = document.getElementById('matchCount');
+    const emptyState = document.getElementById('emptyState');
+    if (!grid) return;
 
-    if (!recommendations.length) {
-      recBlock.innerHTML = `
-        <p>No hay recomendaciones ultra-seguras (≥ 75% de probabilidad) para este partido.</p>
-      `;
-    } else {
-      const list = document.createElement('div');
-      list.className = 'recommendation-list';
+    const list = getFilteredAnalyses();
 
-      recommendations.forEach(rec => {
-        const item = document.createElement('div');
-        item.className = 'recommendation-item';
-        item.innerHTML = `
-          <div class="rec-header">
-            <span class="rec-type">${rec.type.toUpperCase()}</span>
-            <span class="rec-stars">${rec.stars}</span>
+    grid.innerHTML = '';
+
+    if (!list.length) {
+      if (emptyState) emptyState.classList.remove('hidden');
+      if (countEl) countEl.textContent = '(0 partidos)';
+      return;
+    } else if (emptyState) {
+      emptyState.classList.add('hidden');
+    }
+
+    if (countEl) countEl.textContent = `(${list.length} partidos)`;
+
+    list.forEach(a => {
+      const { fixture, home, away, bestPick, confidence } = a;
+      const pct = Math.round((confidence || 0.5) * 100);
+
+      const card = document.createElement('article');
+      card.className = 'match-card';
+      card.dataset.matchId = fixture.id;
+
+      card.innerHTML = `
+        <div class="match-card-top">
+          <div class="badge-group">
+            <span class="badge-tag">Grupo ${fixture.group || '-'}</span>
+            <span class="badge-tag">${formatKickoff(fixture.date)}</span>
           </div>
-          <div class="rec-label">${rec.label}</div>
-          <div class="rec-prob">Probabilidad estimada: ${(rec.prob * 100).toFixed(1)}%</div>
-          <div class="rec-explanation">${rec.explanation}</div>
-        `;
-        list.appendChild(item);
+          <div class="confidence-dial" style="--pct:${pct};" data-pct="${pct}"></div>
+        </div>
+
+        <div class="teams-row">
+          <div class="team-block home">
+            <span class="team-flag">${home.flag}</span>
+            <span class="team-name">${home.name}</span>
+            <span class="team-code">${home.code}</span>
+          </div>
+          <div class="vs-block">
+            <span class="vs-label">VS</span>
+          </div>
+          <div class="team-block away">
+            <span class="team-flag">${away.flag}</span>
+            <span class="team-name">${away.name}</span>
+            <span class="team-code">${away.code}</span>
+          </div>
+        </div>
+
+        <div class="odds-row">
+          <div class="odds-chip">
+            <div class="odds-chip-label">xG local</div>
+            <div class="odds-chip-value">${a.lambdaHome.toFixed(2)}</div>
+          </div>
+          <div class="odds-chip">
+            <div class="odds-chip-label">xG visitante</div>
+            <div class="odds-chip-value">${a.lambdaAway.toFixed(2)}</div>
+          </div>
+          <div class="odds-chip">
+            <div class="odds-chip-label">Confianza</div>
+            <div class="odds-chip-value">${pct}%</div>
+          </div>
+        </div>
+
+        <div class="match-card-footer">
+          <div class="best-pick">
+            <span class="best-pick-label">Pick seguro</span>
+            <span class="best-pick-value">${bestPick ? bestPick.label : 'Sin pick ≥ 75%'}</span>
+          </div>
+          <span class="risk-pill risk-low">MODO SEGURO</span>
+        </div>
+      `;
+
+      card.addEventListener('click', () => openMatchModal(a));
+      grid.appendChild(card);
+    });
+  }
+
+  function renderBestBetsTable() {
+    const tbody = document.getElementById('bestBetsBody');
+    if (!tbody) return;
+
+    tbody.innerHTML = '';
+
+    const rows = [];
+    App.analyses.forEach(a => {
+      a.recommendations.forEach(rec => {
+        rows.push({
+          matchLabel: `${a.home.name} vs ${a.away.name}`,
+          market: rec.type,
+          pick: rec.label,
+          prob: rec.prob
+        });
       });
+    });
 
-      recBlock.appendChild(list);
-    }
+    rows.sort((a, b) => b.prob - a.prob);
 
-    container.appendChild(header);
-    container.appendChild(recBlock);
+    rows.slice(0, 20).forEach(r => {
+      const tr = document.createElement('tr');
+      tr.className = 'row-value';
+      const fairOdds = 1 / r.prob;
+
+      tr.innerHTML = `
+        <td>${r.matchLabel}</td>
+        <td>${r.market}</td>
+        <td>${r.pick}</td>
+        <td class="mono">${(r.prob * 100).toFixed(1)}%</td>
+        <td class="mono">—</td>
+        <td class="mono">${fairOdds.toFixed(2)}</td>
+        <td class="mono">—</td>
+        <td class="mono">—</td>
+        <td><span class="risk-pill risk-low">Seguro</span></td>
+      `;
+      tbody.appendChild(tr);
+    });
   }
 
   /* =========================================================================
-     8. CARGA DE DATOS Y EVENTOS DE INTERFAZ
+     7. MODAL DE DETALLE (AQUÍ METEMOS LAS ESTRELLAS Y LA EXPLICACIÓN)
+     ========================================================================= */
+
+  const matchModal = document.getElementById('matchModal');
+  const modalContent = document.getElementById('modalContent');
+  const modalClose = document.getElementById('modalClose');
+
+  function openMatchModal(analysis) {
+    if (!matchModal || !modalContent) return;
+
+    const { fixture, home, away, lambdaHome, lambdaAway, recommendations } = analysis;
+
+    const recHtml = recommendations.length
+      ? recommendations.map(rec => `
+        <div class="market-card">
+          <div class="mc-title">${rec.type.toUpperCase()} · ${rec.stars}</div>
+          <div class="mc-pick">${rec.label}</div>
+          <div class="mc-foot">
+            <span>Prob: ${(rec.prob * 100).toFixed(1)}%</span>
+          </div>
+          <p style="margin-top:0.4rem;font-size:0.82rem;color:#eef0f4;">
+            ${rec.explanation}
+          </p>
+        </div>
+      `).join('')
+      : `<p>No hay recomendaciones ultra-seguras (≥ 75% de probabilidad) para este partido.</p>`;
+
+    modalContent.innerHTML = `
+      <div class="modal-header">
+        <div>
+          <div class="modal-teams">${home.flag} ${home.name} vs ${away.flag} ${away.name}</div>
+          <div class="modal-meta">
+            ${formatKickoff(fixture.date)} · Grupo ${fixture.group || '-'} · ${fixture.city || ''} · ${fixture.stadium || ''}
+          </div>
+        </div>
+      </div>
+
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="overview">Resumen</button>
+        <button class="tab-btn" data-tab="markets">Mercados seguros</button>
+      </div>
+
+      <div class="tab-panel active" id="tab-overview">
+        <p class="settings-intro">
+          Goles esperados (modelo Poisson): <strong>${home.name} ${lambdaHome.toFixed(2)} — ${lambdaAway.toFixed(2)} ${away.name}</strong>.
+          El modelo está calibrado para priorizar mercados estables (goles totales, doble oportunidad y córners),
+          evitando apuestas locas a ganador de equipos muy débiles.
+        </p>
+      </div>
+
+      <div class="tab-panel" id="tab-markets">
+        <div class="market-grid">
+          ${recHtml}
+        </div>
+      </div>
+    `;
+
+    const tabBtns = modalContent.querySelectorAll('.tab-btn');
+    const panels = {
+      overview: modalContent.querySelector('#tab-overview'),
+      markets: modalContent.querySelector('#tab-markets')
+    };
+
+    tabBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        tabBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const tab = btn.dataset.tab;
+        Object.keys(panels).forEach(k => {
+          panels[k].classList.toggle('active', k === tab);
+        });
+      });
+    });
+
+    matchModal.classList.remove('hidden');
+  }
+
+  function closeMatchModal() {
+    if (matchModal) matchModal.classList.add('hidden');
+  }
+
+  if (modalClose && matchModal) {
+    modalClose.addEventListener('click', closeMatchModal);
+    matchModal.addEventListener('click', (e) => {
+      if (e.target === matchModal) closeMatchModal();
+    });
+  }
+
+  /* =========================================================================
+     8. EVENTOS DE INTERFAZ
+     ========================================================================= */
+
+  function attachEventListeners() {
+    const refreshBtn = document.getElementById('refreshBtn');
+    const marketFilter = document.getElementById('marketFilter');
+    const sortBtns = document.querySelectorAll('.sort-btn');
+    const searchInput = document.getElementById('searchInput');
+
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => {
+        loadDataForToday();
+      });
+    }
+
+    if (marketFilter) {
+      marketFilter.addEventListener('change', (e) => {
+        App.marketFilter = e.target.value;
+        renderMatchesGrid();
+        renderBestBetsTable();
+      });
+    }
+
+    sortBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        sortBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        App.sortBy = btn.dataset.sort;
+        renderMatchesGrid();
+      });
+    });
+
+    if (searchInput) {
+      searchInput.addEventListener('input', (e) => {
+        App.searchTerm = e.target.value.trim();
+        renderMatchesGrid();
+      });
+    }
+
+    const settingsBtn = document.getElementById('settingsBtn');
+    const settingsModal = document.getElementById('settingsModal');
+    const settingsClose = document.getElementById('settingsClose');
+
+    if (settingsBtn && settingsModal && settingsClose) {
+      settingsBtn.addEventListener('click', () => settingsModal.classList.remove('hidden'));
+      settingsClose.addEventListener('click', () => settingsModal.classList.add('hidden'));
+      settingsModal.addEventListener('click', (e) => {
+        if (e.target === settingsModal) settingsModal.classList.add('hidden');
+      });
+    }
+  }
+
+  /* =========================================================================
+     9. CARGA DE DATOS
      ========================================================================= */
 
   async function loadDataForToday() {
@@ -575,8 +785,9 @@
     App.analyses = fixtures.map(f => analyzeMatch(f));
 
     renderLiveBanner();
-    populateMatchSelect();
-    renderSelectedMatch();
+    renderDashboardStats();
+    renderMatchesGrid();
+    renderBestBetsTable();
 
     if (refreshBtn) {
       refreshBtn.disabled = false;
@@ -584,26 +795,8 @@
     }
   }
 
-  function attachEventListeners() {
-    const refreshBtn = document.getElementById('refreshBtn');
-    if (refreshBtn) {
-      refreshBtn.addEventListener('click', () => {
-        // Al pulsar actualizar, siempre se vuelve a tomar la fecha actual del sistema
-        loadDataForToday();
-      });
-    }
-
-    const matchSelect = document.getElementById('matchSelect');
-    if (matchSelect) {
-      matchSelect.addEventListener('change', (e) => {
-        App.selectedMatchId = e.target.value || null;
-        renderSelectedMatch();
-      });
-    }
-  }
-
   /* =========================================================================
-     9. INICIALIZACIÓN
+     10. INICIALIZACIÓN
      ========================================================================= */
 
   document.addEventListener('DOMContentLoaded', () => {
