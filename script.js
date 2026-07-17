@@ -1,1181 +1,529 @@
-/* ===========================================================================
-   MUNDIAL26 AI ANALYTICS — script.js  (REFACTOR v3)
-   ===========================================================================
-   Cambios de esta revisión (ver README.md para el detalle completo):
-
-   BUGS CORREGIDOS
-   1. "Mejores apuestas" / "Apuestas seguras" mezclaban partidos de otras
-      jornadas y partidos ya finalizados. Causa raíz: getFilteredBets() leía
-      directamente de App.analyses (TODOS los partidos) en lugar de respetar
-      el filtro de fecha activo. Solución: ahora se construye a partir de
-      getDateFilteredAnalyses() y excluye explícitamente los partidos cuyo
-      kickoff + 2h ya ha pasado (isFinished()).
-   2. El filtro de mercado "Resultado 1X2" no devolvía NUNCA resultados.
-      Causa raíz: el <option value="1x2"> del HTML se comparaba contra el
-      código interno 'market: "1X2"' (mayúsculas) -> nunca había coincidencia.
-      Solución: todos los códigos de mercado se han unificado en minúsculas.
-   3. El panel analítico podía aparecer vacío porque dependía de Chart.js vía
-      CDN externa (single point of failure). Se ha sustituido por un panel
-      nativo en HTML/CSS sin dependencias, que además solo dibuja los
-      bloques para los que hay datos suficientes (nunca gráficos vacíos).
-
-   CAMBIOS DE PRODUCTO
-   - "Mejores apuestas" y "Apuestas seguras" ahora se organizan SIEMPRE en
-     tres columnas (Riesgo bajo / medio / alto); una columna sin contenido
-     real no se muestra (cero placeholders).
-   - Lo mismo aplica dentro de cada partido (pestaña "Recomendación").
-   - Nuevo "recommendationScore" único: baja mucho el peso del EV (10%) y
-     sube el de probabilidad real, consenso de señales, confianza y
-     contexto competitivo (necesidad de ganar / posible rotación).
-   - Contexto de grupo (situación, necesidad de ganar) estimado a partir del
-     calendario real y un modelo de puntos simulado; siempre etiquetado como
-     estimación, nunca como resultado real.
-   - Árbitros: se documenta explícitamente que NO se muestra ningún dato,
-     porque ninguna API gratuita de frontend lo ofrece (mejor no mostrar
-     nada que inventarlo).
+/* =========================================================================
+   ATP MONTE CARLO SIMULATOR
+   -------------------------------------------------------------------------
+   Simula 20.000 partidos punto a punto para dos enfrentamientos ATP de
+   tierra batida, usando estadísticas reales/estimadas de cada jugador.
    ========================================================================= */
 
-(() => {
-  'use strict';
+const N_SIMULATIONS = 20000;
 
-  /* =========================================================================
-     1. CONFIG Y ALMACENAMIENTO LOCAL
-     ========================================================================= */
-  const STORAGE_KEYS = {
-    oddsApiKey: 'm26_odds_api_key',
-    footballDataApiKey: 'm26_football_data_api_key',
-    liveMode: 'm26_live_mode',
-    safeMode: 'm26_safe_mode'
-  };
+/* -------------------------------------------------------------------------
+   1. DATOS DE JUGADORES
+   Fuentes: ATP Tour player stats, TennisStats.com, MatchStat.com,
+   TennisRatio.com (julio 2026). Donde el dato exacto para tierra batida no
+   estaba disponible se usó el dato de temporada/carrera más cercano y se
+   marcó como estimación (isEstimate: true en el campo correspondiente).
 
-  const Settings = {
-    get oddsApiKey() { return localStorage.getItem(STORAGE_KEYS.oddsApiKey) || ''; },
-    get footballDataApiKey() { return localStorage.getItem(STORAGE_KEYS.footballDataApiKey) || ''; },
-    get liveMode() { return localStorage.getItem(STORAGE_KEYS.liveMode) === '1'; },
-    get safeMode() { const v = localStorage.getItem(STORAGE_KEYS.safeMode); return v === null ? true : v === '1'; },
-    save(odds, fd, live) {
-      localStorage.setItem(STORAGE_KEYS.oddsApiKey, odds || '');
-      localStorage.setItem(STORAGE_KEYS.footballDataApiKey, fd || '');
-      localStorage.setItem(STORAGE_KEYS.liveMode, live ? '1' : '0');
-    },
-    setSafeMode(v) { localStorage.setItem(STORAGE_KEYS.safeMode, v ? '1' : '0'); },
-    clear() {
-      localStorage.removeItem(STORAGE_KEYS.oddsApiKey);
-      localStorage.removeItem(STORAGE_KEYS.footballDataApiKey);
-      localStorage.removeItem(STORAGE_KEYS.liveMode);
+   Campos:
+   - firstServeIn:      % de primeros servicios dentro (0-1)
+   - firstServeWon:      % de puntos ganados con 1er servicio (0-1)
+   - secondServeWon:     % de puntos ganados con 2do servicio (0-1)
+   - acesPerMatch:       aces promedio por partido (asumiendo ~80 puntos de saque)
+   - dfPerMatch:         dobles faltas promedio por partido
+   - bpSaved:             % break points salvados (0-1)
+   - bpConverted:         % break points convertidos como restador (0-1)
+   - clayForm:            multiplicador de ajuste por rendimiento/forma en tierra (1 = neutro)
+   ------------------------------------------------------------------------- */
+const PLAYERS = {
+  rinderknech: {
+    name: "Arthur Rinderknech",
+    color: "#ef4444",
+    firstServeIn: 0.64,
+    firstServeWon: 0.76,
+    secondServeWon: 0.50,
+    acesPerMatch: 9.9,
+    dfPerMatch: 3.0,
+    bpSaved: 0.65,
+    bpConverted: 0.19,
+    clayForm: 0.93, // estimación: 2026 flojo en tierra (0-0 en clay esta temporada)
+    servicePointsPerMatch: 80
+  },
+  tsitsipas: {
+    name: "Stefanos Tsitsipas",
+    color: "#3b82f6",
+    firstServeIn: 0.62,
+    firstServeWon: 0.68,
+    secondServeWon: 0.52,
+    acesPerMatch: 6.2,
+    dfPerMatch: 2.8,
+    bpSaved: 0.63,
+    bpConverted: 0.40,
+    clayForm: 1.05, // especialista en tierra: 72.5% de victorias históricas en esta superficie
+    servicePointsPerMatch: 80
+  },
+  burruchaga: {
+    name: "Román A. Burruchaga",
+    color: "#f97316",
+    firstServeIn: 0.68,
+    firstServeWon: 0.70,
+    secondServeWon: 0.49, // (estimado, dato exacto de tierra no disponible)
+    acesPerMatch: 2.2,
+    dfPerMatch: 2.0,
+    bpSaved: 0.57,
+    bpConverted: 0.44,
+    clayForm: 1.02, // jugador argentino formado en tierra, buen récord en la superficie
+    servicePointsPerMatch: 78
+  },
+  merida: {
+    name: "Daniel Mérida",
+    color: "#22c55e",
+    firstServeIn: 0.66,
+    firstServeWon: 0.68, // (estimado)
+    secondServeWon: 0.46,
+    acesPerMatch: 3.33,
+    dfPerMatch: 2.58,
+    bpSaved: 0.60, // (estimado)
+    bpConverted: 0.627,
+    clayForm: 1.04, // 60% de victorias en tierra en su forma reciente
+    servicePointsPerMatch: 78
+  }
+};
+
+const MATCHUPS = [
+  { p1: "rinderknech", p2: "tsitsipas", containerId: "match-1", tournament: "ATP Gstaad" },
+  { p1: "burruchaga", p2: "merida", containerId: "match-2", tournament: "ATP Umag" }
+];
+
+/* -------------------------------------------------------------------------
+   2. NÚCLEO DE SIMULACIÓN PUNTO A PUNTO
+   ------------------------------------------------------------------------- */
+
+// Probabilidad efectiva de que el servidor gane un punto de su saque,
+// ajustada por su forma en tierra batida.
+function servicePointWinProb(player) {
+  const raw = player.firstServeIn * player.firstServeWon +
+              (1 - player.firstServeIn) * player.secondServeWon;
+  return Math.min(0.95, Math.max(0.35, raw * player.clayForm));
+}
+
+// Probabilidad condicional de que, dado que el servidor gana el punto con
+// el primer servicio, ese punto sea un ace.
+function aceConditionalProb(player) {
+  const acePointProb = player.acesPerMatch / player.servicePointsPerMatch;
+  const firstServeWinProb = player.firstServeIn * player.firstServeWon;
+  if (firstServeWinProb <= 0) return 0;
+  return Math.min(0.9, acePointProb / firstServeWinProb);
+}
+
+// Simula un único punto de saque. Devuelve { serverWins, isAce }
+function simulatePoint(server) {
+  const pWin = servicePointWinProb(server);
+  const isFirstServe = Math.random() < server.firstServeIn;
+  let serverWins;
+  if (isFirstServe) {
+    serverWins = Math.random() < (server.firstServeWon * server.clayForm);
+  } else {
+    serverWins = Math.random() < (server.secondServeWon * server.clayForm);
+  }
+  let isAce = false;
+  if (isFirstServe && serverWins) {
+    isAce = Math.random() < aceConditionalProb(server);
+  }
+  return { serverWins, isAce };
+  void pWin; // pWin usado sólo como referencia conceptual documentada arriba
+}
+
+// Simula un juego de saque completo (con deuces/ventajas).
+// Devuelve { serverWonGame, aces }
+function simulateGame(server) {
+  let serverPoints = 0, returnerPoints = 0, aces = 0;
+  while (true) {
+    const { serverWins, isAce } = simulatePoint(server);
+    if (isAce) aces++;
+    if (serverWins) serverPoints++; else returnerPoints++;
+
+    const serverAhead = serverPoints - returnerPoints;
+    if (serverPoints >= 4 && serverAhead >= 2) return { serverWonGame: true, aces };
+    if (returnerPoints >= 4 && serverAhead <= -2) return { serverWonGame: false, aces };
+  }
+}
+
+// Simula un tie-break (a 7, diferencia de 2).
+function simulateTiebreak(playerA, playerB, aServesFirst) {
+  let pointsA = 0, pointsB = 0, aces = { a: 0, b: 0 };
+  let serverIsA = aServesFirst;
+  let pointNumber = 0;
+  while (true) {
+    const server = serverIsA ? playerA : playerB;
+    const { serverWins, isAce } = simulatePoint(server);
+    if (serverIsA) { if (isAce) aces.a++; } else { if (isAce) aces.b++; }
+
+    if (serverIsA === true) { if (serverWins) pointsA++; else pointsB++; }
+    else { if (serverWins) pointsB++; else pointsA++; }
+
+    pointNumber++;
+    // el saque cambia tras el primer punto y luego cada dos puntos
+    if (pointNumber === 1) { serverIsA = !serverIsA; }
+    else if (pointNumber % 2 === 1) { serverIsA = !serverIsA; }
+
+    const diff = pointsA - pointsB;
+    if (pointsA >= 7 && diff >= 2) return { winner: "A", aces };
+    if (pointsB >= 7 && diff <= -2) return { winner: "B", aces };
+  }
+}
+
+// Simula un set completo. Devuelve { winner, gamesA, gamesB, breaksA, breaksB, acesA, acesB }
+function simulateSet(playerA, playerB, aServesFirst) {
+  let gamesA = 0, gamesB = 0, breaksA = 0, breaksB = 0, acesA = 0, acesB = 0;
+  let aServes = aServesFirst;
+
+  while (true) {
+    if (gamesA === 6 && gamesB === 6) {
+      const tb = simulateTiebreak(playerA, playerB, aServes);
+      acesA += tb.aces.a; acesB += tb.aces.b;
+      if (tb.winner === "A") gamesA++; else gamesB++;
+      break;
     }
-  };
 
-  const MODEL = {
-    LEAGUE_AVG_XG: 1.35,
-    HOST_ADV: 1.08,
-    MAX_GOALS: 6,
-    BOOK_MARGIN: 1.07,
-    MIN_PROB_SURFACE: 0.15,   // ninguna recomendación se muestra por debajo de esta probabilidad real
-    FINISHED_BUFFER_MS: 2 * 3600 * 1000 // un partido se considera finalizado 2h después de su kickoff
-  };
+    const server = aServes ? playerA : playerB;
+    const { serverWonGame, aces } = simulateGame(server);
+    if (aServes) acesA += aces; else acesB += aces;
 
-  const HOST_CITIES = {
-    'México': ['Ciudad de México', 'Guadalajara', 'Monterrey'],
-    'Estados Unidos': ['San Francisco', 'Nueva York/Nueva Jersey', 'Boston', 'Seattle', 'Filadelfia',
-      'Los Ángeles', 'Miami', 'Atlanta', 'Houston', 'Kansas City', 'Dallas'],
-    'Canadá': ['Toronto', 'Vancouver']
-  };
-
-  /* =========================================================================
-     2. UTILIDADES
-     ========================================================================= */
-  function hashString(str) { let h = 0; for (let i = 0; i < str.length; i++) h = (Math.imul(31, h) + str.charCodeAt(i)) | 0; return h >>> 0; }
-  function mulberry32(seed) {
-    let a = seed;
-    return function () {
-      a |= 0; a = (a + 0x6D2B79F5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
-  function rngFor(...parts) { return mulberry32(hashString(parts.join('|'))); }
-  function randRange(rng, min, max) { return min + rng() * (max - min); }
-  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
-  function round1(v) { return Math.round(v * 10) / 10; }
-  function round2(v) { return Math.round(v * 100) / 100; }
-  function normalizeStr(s) { return s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); }
-
-  const FACTORIALS = [1];
-  for (let i = 1; i <= 12; i++) FACTORIALS.push(FACTORIALS[i - 1] * i);
-  function poissonPMF(k, lambda) { return (Math.exp(-lambda) * Math.pow(lambda, k)) / FACTORIALS[k]; }
-  function poissonOverProb(lambda, threshold) {
-    let pUnder = 0;
-    for (let k = 0; k <= Math.floor(threshold); k++) pUnder += poissonPMF(k, lambda);
-    return clamp(1 - pUnder, 0.01, 0.99);
-  }
-
-  function fmtPct(v) { return `${Math.round(v * 100)}%`; }
-  function fmtOdds(v) { return v.toFixed(2); }
-  function fmtSigned(v, suffix = '') { return `${v >= 0 ? '+' : ''}${round1(v)}${suffix}`; }
-  function formatKickoff(iso) { return new Date(iso).toLocaleString('es-ES', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
-  function dateKey(iso) { return new Date(iso).toLocaleDateString('es-ES', { year: 'numeric', month: '2-digit', day: '2-digit' }); }
-  function isFinished(fixture, now) { return new Date(fixture.date).getTime() + MODEL.FINISHED_BUFFER_MS < now.getTime(); }
-
-  /* =========================================================================
-     3. BASE DE DATOS DE EQUIPOS Y PARTIDOS (calendario oficial, 12 grupos)
-     ========================================================================= */
-  const TEAM_META = {
-    'México': { code: 'MEX', flag: '🇲🇽', rating: { att: 72, def: 66, elo: 71 }, players: [['Santiago Giménez', 0.30], ['Hirving Lozano', 0.18], ['Raúl Jiménez', 0.16]] },
-    'Sudáfrica': { code: 'RSA', flag: '🇿🇦', rating: { att: 54, def: 58, elo: 50 }, players: [['Percy Tau', 0.27], ['Lyle Foster', 0.20]] },
-    'Corea del Sur': { code: 'KOR', flag: '🇰🇷', rating: { att: 69, def: 63, elo: 66 }, players: [['Son Heung-min', 0.34], ['Cho Gue-sung', 0.18]] },
-    'Chequia': { code: 'CZE', flag: '🇨🇿', rating: { att: 65, def: 68, elo: 67 }, players: [['Patrik Schick', 0.30], ['Adam Hložek', 0.16]] },
-    'Canadá': { code: 'CAN', flag: '🇨🇦', rating: { att: 68, def: 64, elo: 66 }, players: [['Jonathan David', 0.33], ['Alphonso Davies', 0.18]] },
-    'Bosnia': { code: 'BIH', flag: '🇧🇦', rating: { att: 63, def: 62, elo: 64 }, players: [['Amar Rahmanović', 0.22], ['Benjamin Tahirović', 0.16]] },
-    'Catar': { code: 'QAT', flag: '🇶🇦', rating: { att: 53, def: 56, elo: 49 }, players: [['Akram Afif', 0.31], ['Almoez Ali', 0.22]] },
-    'Suiza': { code: 'SUI', flag: '🇨🇭', rating: { att: 70, def: 76, elo: 72 }, players: [['Breel Embolo', 0.26], ['Dan Ndoye', 0.20], ['Ruben Vargas', 0.15]] },
-    'Brasil': { code: 'BRA', flag: '🇧🇷', rating: { att: 91, def: 77, elo: 90 }, players: [['Vinícius Júnior', 0.34], ['Rodrygo', 0.21], ['Raphinha', 0.19]] },
-    'Marruecos': { code: 'MAR', flag: '🇲🇦', rating: { att: 75, def: 78, elo: 76 }, players: [['Brahim Díaz', 0.23], ['Achraf Hakimi', 0.17], ['Youssef En-Nesyri', 0.21]] },
-    'Haití': { code: 'HAI', flag: '🇭🇹', rating: { att: 47, def: 49, elo: 43 }, players: [['Duckens Nazon', 0.25], ['Frantzdy Pierrot', 0.20]] },
-    'Escocia': { code: 'SCO', flag: '🏴', rating: { att: 61, def: 66, elo: 62 }, players: [['Che Adams', 0.24], ['Lyndon Dykes', 0.19], ['Scott McTominay', 0.18]] },
-    'Estados Unidos': { code: 'USA', flag: '🇺🇸', rating: { att: 74, def: 71, elo: 74 }, players: [['Christian Pulisic', 0.32], ['Folarin Balogun', 0.20]] },
-    'Paraguay': { code: 'PAR', flag: '🇵🇾', rating: { att: 57, def: 63, elo: 56 }, players: [['Antonio Sanabria', 0.23], ['Miguel Almirón', 0.20]] },
-    'Australia': { code: 'AUS', flag: '🇦🇺', rating: { att: 60, def: 64, elo: 59 }, players: [['Mitchell Duke', 0.22], ['Craig Goodwin', 0.16]] },
-    'Turquía': { code: 'TUR', flag: '🇹🇷', rating: { att: 72, def: 66, elo: 70 }, players: [['Arda Güler', 0.23], ['Kerem Aktürkoğlu', 0.22]] },
-    'Alemania': { code: 'GER', flag: '🇩🇪', rating: { att: 83, def: 75, elo: 85 }, players: [['Jamal Musiala', 0.28], ['Florian Wirtz', 0.22]] },
-    'Curazao': { code: 'CUR', flag: '🇨🇼', rating: { att: 46, def: 50, elo: 48 }, players: [['Leandro Bacuna', 0.20], ['Shanon Cijntje', 0.14]] },
-    'Costa de Marfil': { code: 'CIV', flag: '🇨🇮', rating: { att: 73, def: 66, elo: 71 }, players: [['Sébastien Haller', 0.26], ['Franck Kessié', 0.14]] },
-    'Ecuador': { code: 'ECU', flag: '🇪🇨', rating: { att: 67, def: 70, elo: 70 }, players: [['Enner Valencia', 0.24], ['Kevin Rodríguez', 0.20]] },
-    'Países Bajos': { code: 'NED', flag: '🇳🇱', rating: { att: 80, def: 74, elo: 83 }, players: [['Cody Gakpo', 0.26], ['Memphis Depay', 0.20]] },
-    'Japón': { code: 'JPN', flag: '🇯🇵', rating: { att: 73, def: 72, elo: 74 }, players: [['Takefusa Kubo', 0.24], ['Kaoru Mitoma', 0.20]] },
-    'Suecia': { code: 'SWE', flag: '🇸🇪', rating: { att: 67, def: 67, elo: 68 }, players: [['Alexander Isak', 0.34], ['Viktor Gyökeres', 0.26]] },
-    'Túnez': { code: 'TUN', flag: '🇹🇳', rating: { att: 62, def: 66, elo: 64 }, players: [['Hannibal Mejbri', 0.18], ['Issam Jebali', 0.20]] },
-    'Irán': { code: 'IRN', flag: '🇮🇷', rating: { att: 61, def: 64, elo: 63 }, players: [['Mehdi Taremi', 0.30], ['Sardar Azmoun', 0.20]] },
-    'Nueva Zelanda': { code: 'NZL', flag: '🇳🇿', rating: { att: 52, def: 56, elo: 54 }, players: [['Chris Wood', 0.30], ['Max Mata', 0.16]] },
-    'Bélgica': { code: 'BEL', flag: '🇧🇪', rating: { att: 79, def: 73, elo: 82 }, players: [['Romelu Lukaku', 0.28], ['Kevin De Bruyne', 0.18]] },
-    'Egipto': { code: 'EGY', flag: '🇪🇬', rating: { att: 68, def: 68, elo: 70 }, players: [['Mohamed Salah', 0.34], ['Omar Marmoush', 0.20]] },
-    'España': { code: 'ESP', flag: '🇪🇸', rating: { att: 87, def: 82, elo: 90 }, players: [['Lamine Yamal', 0.30], ['Nico Williams', 0.18]] },
-    'Cabo Verde': { code: 'CPV', flag: '🇨🇻', rating: { att: 56, def: 60, elo: 58 }, players: [['Ryan Mendes', 0.22], ['Jamiro Monteiro', 0.16]] },
-    'Arabia Saudita': { code: 'KSA', flag: '🇸🇦', rating: { att: 58, def: 60, elo: 60 }, players: [['Salem Al-Dawsari', 0.26], ['Firas Al-Buraikan', 0.18]] },
-    'Uruguay': { code: 'URU', flag: '🇺🇾', rating: { att: 74, def: 77, elo: 78 }, players: [['Darwin Núñez', 0.30], ['Federico Valverde', 0.18]] },
-    'Francia': { code: 'FRA', flag: '🇫🇷', rating: { att: 90, def: 80, elo: 92 }, players: [['Kylian Mbappé', 0.36], ['Ousmane Dembélé', 0.18]] },
-    'Senegal': { code: 'SEN', flag: '🇸🇳', rating: { att: 74, def: 71, elo: 75 }, players: [['Sadio Mané', 0.28], ['Nicolas Jackson', 0.20]] },
-    'Noruega': { code: 'NOR', flag: '🇳🇴', rating: { att: 75, def: 64, elo: 72 }, players: [['Erling Haaland', 0.42], ['Martin Ødegaard', 0.16]] },
-    'Argentina': { code: 'ARG', flag: '🇦🇷', rating: { att: 86, def: 81, elo: 90 }, players: [['Julián Álvarez', 0.32], ['Lautaro Martínez', 0.22]] },
-    'Argelia': { code: 'ALG', flag: '🇩🇿', rating: { att: 67, def: 63, elo: 66 }, players: [['Riyad Mahrez', 0.28], ['Baghdad Bounedjah', 0.18]] },
-    'Austria': { code: 'AUT', flag: '🇦🇹', rating: { att: 70, def: 68, elo: 70 }, players: [['Marcel Sabitzer', 0.20], ['Michael Gregoritsch', 0.18]] },
-    'Jordania': { code: 'JOR', flag: '🇯🇴', rating: { att: 50, def: 55, elo: 52 }, players: [['Yazan Al-Naimat', 0.22], ['Mousa Al-Tamari', 0.20]] },
-    'Portugal': { code: 'POR', flag: '🇵🇹', rating: { att: 84, def: 76, elo: 86 }, players: [['Cristiano Ronaldo', 0.22], ['Rafael Leão', 0.20]] },
-    'Uzbekistán': { code: 'UZB', flag: '🇺🇿', rating: { att: 54, def: 58, elo: 56 }, players: [['Eldor Shomurodov', 0.26], ['Jasurbek Yakhshiboev', 0.18]] },
-    'Colombia': { code: 'COL', flag: '🇨🇴', rating: { att: 76, def: 70, elo: 77 }, players: [['Luis Díaz', 0.28], ['James Rodríguez', 0.18]] },
-    'Inglaterra': { code: 'ENG', flag: '🏴', rating: { att: 85, def: 79, elo: 89 }, players: [['Harry Kane', 0.34], ['Phil Foden', 0.20]] },
-    'Croacia': { code: 'CRO', flag: '🇭🇷', rating: { att: 75, def: 74, elo: 78 }, players: [['Andrej Kramarić', 0.24], ['Luka Modrić', 0.14]] },
-    'Ghana': { code: 'GHA', flag: '🇬🇭', rating: { att: 64, def: 60, elo: 62 }, players: [['Mohammed Kudus', 0.28], ['Jordan Ayew', 0.18]] },
-    'Panamá': { code: 'PAN', flag: '🇵🇦', rating: { att: 58, def: 62, elo: 60 }, players: [['José Fajardo', 0.20], ['Cecilio Waterman', 0.18]] },
-    'Repechaje Intercontinental 1': { code: 'TBD', flag: '🏳️', rating: { att: 58, def: 60, elo: 56 }, players: [] },
-    'Repechaje Intercontinental 2': { code: 'TBD', flag: '🏳️', rating: { att: 58, def: 60, elo: 56 }, players: [] }
-  };
-
-  const RAW_FIXTURES = [
-    ['2026-06-11T19:00:00Z', 'A', 'Ciudad de México', 'México', 'Sudáfrica'],
-    ['2026-06-12T02:00:00Z', 'A', 'Guadalajara', 'Corea del Sur', 'Chequia'],
-    ['2026-06-18T16:00:00Z', 'A', 'Atlanta', 'Chequia', 'Sudáfrica'],
-    ['2026-06-19T01:00:00Z', 'A', 'Guadalajara', 'México', 'Corea del Sur'],
-    ['2026-06-25T01:00:00Z', 'A', 'Ciudad de México', 'Chequia', 'México'],
-    ['2026-06-25T01:00:00Z', 'A', 'Monterrey', 'Sudáfrica', 'Corea del Sur'],
-    ['2026-06-12T19:00:00Z', 'B', 'Toronto', 'Canadá', 'Bosnia'],
-    ['2026-06-13T19:00:00Z', 'B', 'San Francisco', 'Catar', 'Suiza'],
-    ['2026-06-18T19:00:00Z', 'B', 'Los Ángeles', 'Suiza', 'Bosnia'],
-    ['2026-06-18T22:00:00Z', 'B', 'Vancouver', 'Canadá', 'Catar'],
-    ['2026-06-24T19:00:00Z', 'B', 'Vancouver', 'Suiza', 'Canadá'],
-    ['2026-06-24T19:00:00Z', 'B', 'Seattle', 'Bosnia', 'Catar'],
-    ['2026-06-13T22:00:00Z', 'C', 'Nueva York/Nueva Jersey', 'Brasil', 'Marruecos'],
-    ['2026-06-14T01:00:00Z', 'C', 'Boston', 'Haití', 'Escocia'],
-    ['2026-06-19T22:00:00Z', 'C', 'Boston', 'Escocia', 'Marruecos'],
-    ['2026-06-20T01:00:00Z', 'C', 'Filadelfia', 'Brasil', 'Haití'],
-    ['2026-06-24T22:00:00Z', 'C', 'Miami', 'Escocia', 'Brasil'],
-    ['2026-06-24T22:00:00Z', 'C', 'Atlanta', 'Marruecos', 'Haití'],
-    ['2026-06-13T01:00:00Z', 'D', 'Los Ángeles', 'Estados Unidos', 'Paraguay'],
-    ['2026-06-14T04:00:00Z', 'D', 'Vancouver', 'Australia', 'Turquía'],
-    ['2026-06-19T19:00:00Z', 'D', 'Seattle', 'Estados Unidos', 'Australia'],
-    ['2026-06-20T04:00:00Z', 'D', 'San Francisco', 'Turquía', 'Paraguay'],
-    ['2026-06-26T02:00:00Z', 'D', 'Los Ángeles', 'Turquía', 'Estados Unidos'],
-    ['2026-06-26T02:00:00Z', 'D', 'San Francisco', 'Paraguay', 'Australia'],
-    ['2026-06-14T17:00:00Z', 'E', 'Houston', 'Alemania', 'Curazao'],
-    ['2026-06-14T23:00:00Z', 'E', 'Filadelfia', 'Costa de Marfil', 'Ecuador'],
-    ['2026-06-20T20:00:00Z', 'E', 'Toronto', 'Alemania', 'Costa de Marfil'],
-    ['2026-06-21T00:00:00Z', 'E', 'Kansas City', 'Ecuador', 'Curazao'],
-    ['2026-06-25T20:00:00Z', 'E', 'Nueva York/Nueva Jersey', 'Ecuador', 'Alemania'],
-    ['2026-06-25T20:00:00Z', 'E', 'Filadelfia', 'Curazao', 'Costa de Marfil'],
-    ['2026-06-14T20:00:00Z', 'F', 'Dallas', 'Países Bajos', 'Japón'],
-    ['2026-06-15T02:00:00Z', 'F', 'Monterrey', 'Suecia', 'Túnez'],
-    ['2026-06-20T17:00:00Z', 'F', 'Houston', 'Países Bajos', 'Suecia'],
-    ['2026-06-21T04:00:00Z', 'F', 'Monterrey', 'Túnez', 'Japón'],
-    ['2026-06-25T23:00:00Z', 'F', 'Dallas', 'Japón', 'Suecia'],
-    ['2026-06-25T23:00:00Z', 'F', 'Kansas City', 'Túnez', 'Países Bajos'],
-    ['2026-06-15T19:00:00Z', 'G', 'Seattle', 'Bélgica', 'Egipto'],
-    ['2026-06-16T01:00:00Z', 'G', 'Los Ángeles', 'Irán', 'Nueva Zelanda'],
-    ['2026-06-21T19:00:00Z', 'G', 'Los Ángeles', 'Bélgica', 'Irán'],
-    ['2026-06-22T01:00:00Z', 'G', 'Vancouver', 'Nueva Zelanda', 'Egipto'],
-    ['2026-06-27T03:00:00Z', 'G', 'Seattle', 'Egipto', 'Irán'],
-    ['2026-06-27T03:00:00Z', 'G', 'Vancouver', 'Nueva Zelanda', 'Bélgica'],
-    ['2026-06-15T16:00:00Z', 'H', 'Atlanta', 'España', 'Cabo Verde'],
-    ['2026-06-15T22:00:00Z', 'H', 'Miami', 'Arabia Saudita', 'Uruguay'],
-    ['2026-06-21T16:00:00Z', 'H', 'Atlanta', 'España', 'Arabia Saudita'],
-    ['2026-06-21T22:00:00Z', 'H', 'Miami', 'Uruguay', 'Cabo Verde'],
-    ['2026-06-27T00:00:00Z', 'H', 'Houston', 'Cabo Verde', 'Arabia Saudita'],
-    ['2026-06-27T00:00:00Z', 'H', 'Guadalajara', 'Uruguay', 'España'],
-    ['2026-06-16T19:00:00Z', 'I', 'Nueva York/Nueva Jersey', 'Francia', 'Senegal'],
-    ['2026-06-16T22:00:00Z', 'I', 'Boston', 'Repechaje Intercontinental 2', 'Noruega'],
-    ['2026-06-22T21:00:00Z', 'I', 'Filadelfia', 'Francia', 'Repechaje Intercontinental 2'],
-    ['2026-06-23T00:00:00Z', 'I', 'Nueva York/Nueva Jersey', 'Noruega', 'Senegal'],
-    ['2026-06-26T19:00:00Z', 'I', 'Boston', 'Noruega', 'Francia'],
-    ['2026-06-26T19:00:00Z', 'I', 'Toronto', 'Senegal', 'Repechaje Intercontinental 2'],
-    ['2026-06-17T01:00:00Z', 'J', 'Kansas City', 'Argentina', 'Argelia'],
-    ['2026-06-17T04:00:00Z', 'J', 'San Francisco', 'Austria', 'Jordania'],
-    ['2026-06-22T17:00:00Z', 'J', 'Dallas', 'Argentina', 'Austria'],
-    ['2026-06-23T03:00:00Z', 'J', 'San Francisco', 'Jordania', 'Argelia'],
-    ['2026-06-28T02:00:00Z', 'J', 'Kansas City', 'Argelia', 'Austria'],
-    ['2026-06-28T02:00:00Z', 'J', 'Dallas', 'Jordania', 'Argentina'],
-    ['2026-06-17T17:00:00Z', 'K', 'Houston', 'Portugal', 'Repechaje Intercontinental 1'],
-    ['2026-06-18T02:00:00Z', 'K', 'Ciudad de México', 'Uzbekistán', 'Colombia'],
-    ['2026-06-23T17:00:00Z', 'K', 'Houston', 'Portugal', 'Uzbekistán'],
-    ['2026-06-24T02:00:00Z', 'K', 'Guadalajara', 'Colombia', 'Repechaje Intercontinental 1'],
-    ['2026-06-27T23:30:00Z', 'K', 'Miami', 'Colombia', 'Portugal'],
-    ['2026-06-27T23:30:00Z', 'K', 'Atlanta', 'Repechaje Intercontinental 1', 'Uzbekistán'],
-    ['2026-06-17T20:00:00Z', 'L', 'Dallas', 'Inglaterra', 'Croacia'],
-    ['2026-06-17T23:00:00Z', 'L', 'Toronto', 'Ghana', 'Panamá'],
-    ['2026-06-23T20:00:00Z', 'L', 'Boston', 'Inglaterra', 'Ghana'],
-    ['2026-06-23T23:00:00Z', 'L', 'Toronto', 'Panamá', 'Croacia'],
-    ['2026-06-27T21:00:00Z', 'L', 'Nueva York/Nueva Jersey', 'Panamá', 'Inglaterra'],
-    ['2026-06-27T21:00:00Z', 'L', 'Filadelfia', 'Croacia', 'Ghana']
-  ];
-
-  const STADIUM_BY_CITY = {
-    'Ciudad de México': 'Estadio Azteca', 'Guadalajara': 'Estadio Akron', 'Monterrey': 'Estadio BBVA',
-    'Toronto': 'BMO Field', 'Vancouver': 'BC Place', 'San Francisco': "Levi's Stadium",
-    'Nueva York/Nueva Jersey': 'MetLife Stadium', 'Boston': 'Gillette Stadium', 'Seattle': 'Lumen Field',
-    'Filadelfia': 'Lincoln Financial Field', 'Los Ángeles': 'SoFi Stadium', 'Miami': 'Hard Rock Stadium',
-    'Atlanta': 'Mercedes-Benz Stadium', 'Houston': 'NRG Stadium', 'Kansas City': 'Arrowhead Stadium',
-    'Dallas': 'AT&T Stadium'
-  };
-
-  const FALLBACK_FIXTURES = RAW_FIXTURES.map(([date, group, city, home, away], i) => ({
-    id: `m26-${i + 1}`, date, group, city, stadium: STADIUM_BY_CITY[city] || city, home, away, scheduleSource: 'static-real'
-  }));
-
-  function hostAdvantageTeam(fixture) {
-    for (const [team, cities] of Object.entries(HOST_CITIES)) {
-      if (cities.includes(fixture.city) && (fixture.home === team || fixture.away === team)) return team;
-    }
-    return null;
-  }
-
-  /* =========================================================================
-     4. CAPA DE DATOS
-     ========================================================================= */
-  async function tryFetchLiveFixtures() {
-    if (!Settings.liveMode || !Settings.footballDataApiKey) return { data: null, status: 'not-configured' };
-    try {
-      const res = await fetch('https://api.football-data.org/v4/competitions/WC/matches', { headers: { 'X-Auth-Token': Settings.footballDataApiKey } });
-      if (!res.ok) return { data: null, status: 'error' };
-      const json = await res.json();
-      if (!json.matches || !json.matches.length) return { data: null, status: 'error' };
-      const data = json.matches.map((m, i) => ({
-        id: `live-${i}`, date: m.utcDate, group: (m.group || '').replace('GROUP_', ''),
-        city: m.venue || m.area?.name || '', stadium: m.venue || '',
-        home: m.homeTeam?.name || 'Local', away: m.awayTeam?.name || 'Visitante', scheduleSource: 'live-api'
-      }));
-      return { data, status: 'live' };
-    } catch (err) { console.warn('[MUNDIAL26] football-data.org no respondió. Se usa el calendario oficial embebido.', err); return { data: null, status: 'error' }; }
-  }
-
-  async function tryFetchLiveOdds() {
-    if (!Settings.liveMode || !Settings.oddsApiKey) return { data: null, status: 'not-configured' };
-    try {
-      const url = `https://api.the-odds-api.com/v4/sports/soccer_fifa_world_cup/odds/?regions=eu&markets=h2h&oddsFormat=decimal&apiKey=${encodeURIComponent(Settings.oddsApiKey)}`;
-      const res = await fetch(url);
-      if (!res.ok) return { data: null, status: 'error' };
-      const json = await res.json();
-      const map = {};
-      json.forEach(ev => {
-        const book = ev.bookmakers.find(b => b.key === 'bet365') || ev.bookmakers[0];
-        const market = book?.markets.find(m => m.key === 'h2h');
-        if (!market) return;
-        const odds = {};
-        market.outcomes.forEach(o => { if (o.name === ev.home_team) odds.home = o.price; else if (o.name === ev.away_team) odds.away = o.price; else odds.draw = o.price; });
-        map[`${ev.home_team}|${ev.away_team}`] = { ...odds, bookmaker: book.title };
-      });
-      return { data: map, status: 'live' };
-    } catch (err) { console.warn('[MUNDIAL26] The Odds API no respondió. Se usan cuotas simuladas.', err); return { data: null, status: 'error' }; }
-  }
-
-  /* =========================================================================
-     5. MODELO ESTADÍSTICO DE EQUIPOS
-     ========================================================================= */
-  const teamStatsCache = new Map();
-
-  function getTeamStats(teamName, jitterSeed = '') {
-    const cacheKey = teamName + '::' + jitterSeed;
-    if (teamStatsCache.has(cacheKey)) return teamStatsCache.get(cacheKey);
-    const meta = TEAM_META[teamName] || { code: teamName.slice(0, 3).toUpperCase(), flag: '🏳️', rating: { att: 60, def: 60, elo: 58 }, players: [] };
-    const rng = rngFor('stats', teamName, jitterSeed);
-    const { att, def, elo } = meta.rating;
-
-    const xgFor = clamp(0.55 + (att / 100) * 2.05 + randRange(rng, -0.08, 0.08), 0.4, 3.0);
-    const xgAgainst = clamp(0.55 + ((100 - def) / 100) * 2.05 + randRange(rng, -0.08, 0.08), 0.35, 2.8);
-
-    const last10 = [];
-    for (let i = 0; i < 10; i++) {
-      const r = rng();
-      const winProb = clamp(0.28 + (elo - 50) / 140, 0.08, 0.74);
-      const drawProb = 0.25;
-      let result, gf, ga;
-      if (r < winProb) { result = 'W'; gf = Math.round(randRange(rng, 1, 3)); ga = Math.round(randRange(rng, 0, gf)); }
-      else if (r < winProb + drawProb) { result = 'D'; gf = Math.round(randRange(rng, 0, 2)); ga = gf; }
-      else { result = 'L'; ga = Math.round(randRange(rng, 1, 3)); gf = Math.round(randRange(rng, 0, ga)); }
-      last10.push({ result, gf, ga });
-    }
-    const last5 = last10.slice(5);
-    const sumPts = arr => arr.reduce((s, r) => s + (r.result === 'W' ? 3 : r.result === 'D' ? 1 : 0), 0);
-    const points10 = sumPts(last10), points5 = sumPts(last5);
-    const goalsFor10 = last10.reduce((s, r) => s + r.gf, 0), goalsAgainst10 = last10.reduce((s, r) => s + r.ga, 0);
-    const goalsFor5 = last5.reduce((s, r) => s + r.gf, 0), goalsAgainst5 = last5.reduce((s, r) => s + r.ga, 0);
-    const scoringRate = last10.filter(r => r.gf > 0).length / 10;
-    const concedingRate = last10.filter(r => r.ga > 0).length / 10;
-
-    const shotsTotal = clamp(7.5 + (att / 100) * 13.5 + randRange(rng, -1, 1), 6, 23);
-    const shotsOnTarget = clamp(shotsTotal * randRange(rng, 0.32, 0.42), 2, 11);
-    const corners = clamp(3.2 + (att / 100) * 4.6 + randRange(rng, -0.6, 0.6), 2, 9);
-    const cardsAvg = clamp(1.4 + randRange(rng, -0.5, 1.3), 0.8, 4.2);
-    const possession = clamp(36 + (att / 100) * 26 + randRange(rng, -3, 3), 32, 68);
-
-    const injuryCount = rng() < 0.35 ? (rng() < 0.5 ? 1 : 2) : 0;
-    const injuries = [];
-    const statuses = ['Duda (molestia muscular)', 'Baja confirmada', 'Sancionado (acumulación de tarjetas)'];
-    for (let i = 0; i < injuryCount; i++) { const player = meta.players[i % (meta.players.length || 1)]; if (player) injuries.push({ name: player[0], status: statuses[Math.floor(rng() * statuses.length)] }); }
-
-    const stats = {
-      code: meta.code, flag: meta.flag, rating: meta.rating, players: meta.players,
-      xgFor: round2(xgFor), xgAgainst: round2(xgAgainst),
-      last10, last5, points10, points5, goalsFor10, goalsAgainst10, goalsFor5, goalsAgainst5, scoringRate, concedingRate,
-      shotsTotal: round1(shotsTotal), shotsOnTarget: round1(shotsOnTarget),
-      corners: round1(corners), cardsAvg: round1(cardsAvg), possession: round1(possession), injuries
-    };
-    teamStatsCache.set(cacheKey, stats);
-    return stats;
-  }
-
-  function getH2H(homeName, awayName) {
-    const rng = rngFor('h2h', homeName, awayName);
-    const n = 2 + Math.floor(rng() * 3);
-    const results = [];
-    const homeElo = (TEAM_META[homeName]?.rating.elo) || 55, awayElo = (TEAM_META[awayName]?.rating.elo) || 55;
-    for (let i = 0; i < n; i++) {
-      const r = rng();
-      const winProbHome = clamp(0.33 + (homeElo - awayElo) / 160, 0.12, 0.72);
-      let hg, ag;
-      if (r < winProbHome) { hg = Math.ceil(randRange(rng, 1, 3)); ag = Math.floor(randRange(rng, 0, hg)); }
-      else if (r < winProbHome + 0.22) { hg = Math.round(randRange(rng, 0, 2)); ag = hg; }
-      else { ag = Math.ceil(randRange(rng, 1, 3)); hg = Math.floor(randRange(rng, 0, ag)); }
-      const yearsAgo = (n - i) * randRange(rng, 1.5, 4);
-      results.push({ year: Math.round(2026 - yearsAgo), home: homeName, away: awayName, hg, ag });
-    }
-    return results;
-  }
-
-  /* =========================================================================
-     5B. CONTEXTO DE GRUPO (necesidad de ganar / posible rotación)
-     -------------------------------------------------------------------------
-     No existe ninguna API gratuita de frontend con la clasificación real del
-     grupo en tiempo real. Para no dejar este apartado vacío ni inventar
-     resultados concretos de partidos ya jugados, se estima de forma
-     determinista (misma semilla = mismo resultado) un número de puntos
-     plausible para los partidos de grupo que ya se han disputado, y con eso
-     se deriva una "urgencia" (0 a 1) que ajusta ligeramente el modelo. Todo
-     se etiqueta como estimación, igual que el resto de estadísticas.
-     ========================================================================= */
-  function buildGroupFixturesByTeam(fixtures) {
-    const byTeam = {};
-    fixtures.forEach(fx => { [fx.home, fx.away].forEach(t => { (byTeam[t] = byTeam[t] || []).push(fx); }); });
-    return byTeam;
-  }
-
-  function teamUrgency(team, now, groupFixturesByTeam, refreshSalt) {
-    const fixturesOfTeam = groupFixturesByTeam[team] || [];
-    if (fixturesOfTeam.length === 0) return { urgency: 0, points: null, played: 0, remaining: 0 };
-    const played = fixturesOfTeam.filter(fx => new Date(fx.date) < now);
-    const remaining = fixturesOfTeam.length - played.length;
-    if (played.length === 0) return { urgency: 0.2, points: null, played: 0, remaining };
-    if (remaining === 0) return { urgency: 0, points: null, played: played.length, remaining: 0 };
-
-    const rng = rngFor('groupctx', team, refreshSalt);
-    const elo = TEAM_META[team]?.rating.elo || 58;
-    const winP = clamp(0.25 + (elo - 55) / 150, 0.1, 0.7);
-    let points = 0;
-    played.forEach(() => { const r = rng(); if (r < winP) points += 3; else if (r < winP + 0.27) points += 1; });
-
-    let urgency;
-    if (points <= 1 && remaining <= 1) urgency = 1.0;
-    else if (points <= 3 && remaining <= 2) urgency = 0.6;
-    else if (points >= 6) urgency = 0.15;
-    else urgency = 0.35;
-    return { urgency, points, played: played.length, remaining };
-  }
-
-  /* =========================================================================
-     6. MOTOR DE PREDICCIÓN
-     ========================================================================= */
-  function buildScoreMatrix(lambdaHome, lambdaAway) {
-    const n = MODEL.MAX_GOALS, matrix = [];
-    for (let i = 0; i <= n; i++) { const row = []; for (let j = 0; j <= n; j++) row.push(poissonPMF(i, lambdaHome) * poissonPMF(j, lambdaAway)); matrix.push(row); }
-    return matrix;
-  }
-
-  function analyzeGoalMarkets(matrix) {
-    const n = MODEL.MAX_GOALS;
-    let pHome = 0, pDraw = 0, pAway = 0;
-    const pZeroZero = matrix[0][0];
-    const pOver = { '0.5': 0, '1.5': 0, '2.5': 0, '3.5': 0 };
-    const scorelines = [];
-    for (let i = 0; i <= n; i++) {
-      for (let j = 0; j <= n; j++) {
-        const p = matrix[i][j];
-        if (i > j) pHome += p; else if (i === j) pDraw += p; else pAway += p;
-        const total = i + j;
-        if (total > 0.5) pOver['0.5'] += p;
-        if (total > 1.5) pOver['1.5'] += p;
-        if (total > 2.5) pOver['2.5'] += p;
-        if (total > 3.5) pOver['3.5'] += p;
-        scorelines.push({ h: i, a: j, p });
-      }
-    }
-    const pHomeZero = matrix.reduce((s, row) => s + row[0], 0);
-    const pAwayZero = matrix[0].reduce((s, v) => s + v, 0);
-    const pBtts = 1 - (pHomeZero + pAwayZero - pZeroZero);
-    scorelines.sort((a, b) => b.p - a.p);
-    return { pHome, pDraw, pAway, pOver, pBtts, topScorelines: scorelines.slice(0, 3) };
-  }
-
-  function analyzeMatch(fixture, liveOddsMap, refreshSalt, liveDataBonus, now, groupFixturesByTeam) {
-    const home = getTeamStats(fixture.home, refreshSalt);
-    const away = getTeamStats(fixture.away, refreshSalt);
-
-    const advTeam = hostAdvantageTeam(fixture);
-    const homeBoost = advTeam === fixture.home ? MODEL.HOST_ADV : 1;
-    const awayBoost = advTeam === fixture.away ? MODEL.HOST_ADV : 1;
-
-    const attHome = home.xgFor / MODEL.LEAGUE_AVG_XG, defHome = home.xgAgainst / MODEL.LEAGUE_AVG_XG;
-    const attAway = away.xgFor / MODEL.LEAGUE_AVG_XG, defAway = away.xgAgainst / MODEL.LEAGUE_AVG_XG;
-
-    // --- Contexto de grupo: necesidad de ganar / posible rotación (estimado) ---
-    const ctxHome = teamUrgency(fixture.home, now, groupFixturesByTeam, refreshSalt);
-    const ctxAway = teamUrgency(fixture.away, now, groupFixturesByTeam, refreshSalt);
-    const contextUrgency = (ctxHome.urgency + ctxAway.urgency) / 2;
-    // Un equipo que "necesita ganar sí o sí" empuja ligeramente el partido hacia
-    // más goles y más intensidad (más tarjetas), tal y como pidió el brief.
-    const urgencyGoalsMult = 1 + 0.06 * contextUrgency;
-    const urgencyCardsMult = 1 + 0.10 * contextUrgency;
-
-    let lambdaHome = clamp(MODEL.LEAGUE_AVG_XG * attHome * defAway * homeBoost * urgencyGoalsMult, 0.3, 3.6);
-    let lambdaAway = clamp(MODEL.LEAGUE_AVG_XG * attAway * defHome * awayBoost * urgencyGoalsMult, 0.25, 3.3);
-
-    const matrix = buildScoreMatrix(lambdaHome, lambdaAway);
-    const goals = analyzeGoalMarkets(matrix);
-
-    const expCornersHome = round1(home.corners * 1.04), expCornersAway = round1(away.corners * 0.96);
-    const totalCornersLambda = expCornersHome + expCornersAway;
-    const corners = {
-      home: expCornersHome, away: expCornersAway, total: round1(totalCornersLambda),
-      over35: poissonOverProb(totalCornersLambda, 3.5), over45: poissonOverProb(totalCornersLambda, 4.5),
-      over85: poissonOverProb(totalCornersLambda, 8.5), over95: poissonOverProb(totalCornersLambda, 9.5)
-    };
-
-    const totalCardsLambda = (home.cardsAvg + away.cardsAvg) * urgencyCardsMult;
-    const cards = { home: home.cardsAvg, away: away.cardsAvg, total: round1(totalCardsLambda), over35: poissonOverProb(totalCardsLambda, 3.5) };
-
-    const scorerPool = [];
-    [[home, lambdaHome], [away, lambdaAway]].forEach(([team, lambda]) => { team.players.forEach(([name, weight]) => scorerPool.push({ name, team: team.code, prob: clamp(weight * (lambda / 1.4), 0.02, 0.55) })); });
-    scorerPool.sort((a, b) => b.prob - a.prob);
-
-    const h2h = getH2H(fixture.home, fixture.away);
-
-    const liveKey = `${fixture.home}|${fixture.away}`;
-    const live = liveOddsMap && liveOddsMap[liveKey];
-    const odds = live
-      ? { home: live.home, draw: live.draw, away: live.away, source: live.bookmaker || 'Bet365 (en vivo)', isLive: true }
-      : simulateBookOdds({ home: goals.pHome, draw: goals.pDraw, away: goals.pAway }, fixture.id, refreshSalt);
-
-    const predictedOutcome = goals.pHome >= goals.pDraw && goals.pHome >= goals.pAway ? 'home' : goals.pAway >= goals.pDraw ? 'away' : 'draw';
-
-    const eloDiff = (home.rating.elo + (homeBoost > 1 ? 3 : 0)) - (away.rating.elo + (awayBoost > 1 ? 3 : 0));
-    const eloSignal = eloDiff > 4 ? 'home' : eloDiff < -4 ? 'away' : 'draw';
-    const formDiff = (home.points10 / 10) - (away.points10 / 10);
-    const formSignal = formDiff > 0.3 ? 'home' : formDiff < -0.3 ? 'away' : 'draw';
-    const xgDiff = (home.xgFor - home.xgAgainst) - (away.xgFor - away.xgAgainst);
-    const xgSignal = xgDiff > 0.25 ? 'home' : xgDiff < -0.25 ? 'away' : 'draw';
-    const h2hHomeWins = h2h.filter(g => g.hg > g.ag).length, h2hAwayWins = h2h.filter(g => g.ag > g.hg).length;
-    const h2hSignal = h2hHomeWins > h2hAwayWins ? 'home' : h2hAwayWins > h2hHomeWins ? 'away' : 'draw';
-    const signals = [eloSignal, formSignal, xgSignal, h2hSignal];
-    const signalAgreement = signals.filter(s => s === predictedOutcome).length / signals.length;
-
-    const sortedProbs = [goals.pHome, goals.pDraw, goals.pAway].sort((a, b) => b - a);
-    const marginFactor = sortedProbs[0] - sortedProbs[1];
-    const dataQuality = liveDataBonus ? 0.85 : 0.75;
-    const bestBookProb = Math.max(1 / odds.home, 1 / odds.draw, 1 / odds.away);
-    const oddsAgreement = 1 - clamp(Math.abs(sortedProbs[0] - bestBookProb), 0, 1);
-
-    const confidence = Math.round(clamp(
-      marginFactor * 100 * 0.35 + signalAgreement * 100 * 0.35 + dataQuality * 100 * 0.15 + oddsAgreement * 100 * 0.15, 5, 92
-    ));
-
-    const bttsBacked = home.scoringRate >= 0.6 && away.concedingRate >= 0.5 && away.scoringRate >= 0.6 && home.concedingRate >= 0.5;
-
-    // Nota de contexto en lenguaje claro (se usa en los motivos de la recomendación)
-    let contextNote = null;
-    if (ctxHome.urgency >= 0.8) contextNote = `${fixture.home} necesita ganar para mantener opciones de clasificación (situación de grupo estimada, ${ctxHome.points ?? '?'} pts en ${ctxHome.played} jugados).`;
-    else if (ctxAway.urgency >= 0.8) contextNote = `${fixture.away} necesita ganar para mantener opciones de clasificación (situación de grupo estimada, ${ctxAway.points ?? '?'} pts en ${ctxAway.played} jugados).`;
-    else if (ctxHome.urgency <= 0.15 && ctxHome.played > 0) contextNote = `${fixture.home} ya tendría el pase encarrilado (estimado): posible rotación de la alineación.`;
-    else if (ctxAway.urgency <= 0.15 && ctxAway.played > 0) contextNote = `${fixture.away} ya tendría el pase encarrilado (estimado): posible rotación de la alineación.`;
-
-    const valueBets = buildValueBets(fixture, goals, corners, cards, odds, home, away, bttsBacked);
-    const analysisForScoring = { confidence, signalAgreement, contextUrgency };
-    valueBets.forEach(b => { b.recScore = recommendationScore(b, analysisForScoring); b.riskTier = betRiskLevel(b, analysisForScoring); });
-
-    const eligible = b => b.prob >= MODEL.MIN_PROB_SURFACE;
-    const bestValueBet = valueBets.filter(eligible).reduce((best, b) => (b.recScore > (best?.recScore ?? -Infinity) ? b : best), null);
-    const safeCandidates = valueBets.filter(b => b.safe && b.prob >= 0.45 && confidence >= 55);
-    const safeRecommendation = safeCandidates.reduce((best, b) => (b.recScore > (best?.recScore ?? -Infinity) ? b : best), null);
-
-    let risk;
-    if (confidence >= 70 && safeRecommendation) risk = 'low';
-    else if (confidence >= 50) risk = 'medium';
-    else risk = 'high';
-
-    return {
-      fixture, home, away, lambdaHome: round2(lambdaHome), lambdaAway: round2(lambdaAway),
-      goals, corners, cards, scorerPool, h2h, odds, valueBets,
-      confidence, risk, bestValueBet, safeRecommendation, predictedOutcome,
-      signalAgreement, hostAdvantageTeam: advTeam, bttsBacked, contextUrgency, contextNote,
-      finished: isFinished(fixture, now)
-    };
-  }
-
-  /* =========================================================================
-     7. CUOTAS, VALUE BETS Y PUNTUACIÓN
-     -------------------------------------------------------------------------
-     recommendationScore pondera mucho más la probabilidad real, el consenso
-     de señales, la confianza del partido y el contexto competitivo que el
-     EV puro (solo 10%). betRiskLevel clasifica cada apuesta individual en
-     bajo/medio/alto para poder organizar la interfaz en tres columnas.
-     ========================================================================= */
-  function simulateBookOdds(modelProbs, matchId, refreshSalt) {
-    const rng = rngFor('odds', matchId, refreshSalt);
-    const noisy = {}; let sum = 0;
-    Object.entries(modelProbs).forEach(([k, p]) => { const noise = randRange(rng, 0.95, 1.07); noisy[k] = clamp(p * noise, 0.02, 0.95); sum += noisy[k]; });
-    const out = { isLive: false, source: 'Simulado (modo demo)' };
-    Object.entries(noisy).forEach(([k, p]) => { out[k] = round2(1 / ((p / sum) * MODEL.BOOK_MARGIN)); });
-    return out;
-  }
-  function impliedProb(odds) { return 1 / odds; }
-  function fairOdds(prob) { return prob > 0.001 ? round2(1 / prob) : 99; }
-  function calcEdge(modelProb, bookOdds) { return (modelProb - impliedProb(bookOdds)) * 100; }
-  function calcEV(modelProb, bookOdds) { return (modelProb * bookOdds - 1) * 100; }
-
-  function probWeightFactor(prob) {
-    if (prob < 0.15) return 0.04;
-    if (prob < 0.25) return 0.20;
-    if (prob < 0.35) return 0.45;
-    if (prob < 0.50) return 0.75;
-    return 1.0;
-  }
-
-  // EV reducido al 10% del peso total; probabilidad real (45%) y consenso de
-  // señales + contexto (35%) dominan la puntuación.
-  function recommendationScore(bet, a) {
-    const base = 0.45 * bet.prob + 0.25 * a.signalAgreement + 0.15 * (a.confidence / 100) + 0.10 * a.contextUrgency + 0.05 * clamp((bet.ev + 5) / 30, 0, 1);
-    return base * probWeightFactor(bet.prob);
-  }
-
-  function betRiskLevel(bet, a) {
-    if (bet.prob >= 0.60 && a.signalAgreement >= 0.5 && a.confidence >= 55) return 'low';
-    if (bet.prob >= 0.38) return 'medium';
-    return 'high';
-  }
-
-  function buildValueBets(fixture, goals, corners, cards, odds, home, away, bttsBacked) {
-    const bets = [];
-    const push = (market, selection, prob, bookOdds, safe) => {
-      bets.push({ matchId: fixture.id, market, selection, prob, bookOdds, fairOdds: fairOdds(prob), edge: calcEdge(prob, bookOdds), ev: calcEV(prob, bookOdds), safe: !!safe });
-    };
-
-    push('1x2', `Gana ${fixture.home}`, goals.pHome, odds.home, false);
-    push('1x2', 'Empate', goals.pDraw, odds.draw, false);
-    push('1x2', `Gana ${fixture.away}`, goals.pAway, odds.away, false);
-
-    const dc1X = goals.pHome + goals.pDraw, dcX2 = goals.pDraw + goals.pAway, dc12 = goals.pHome + goals.pAway;
-    push('double_chance', `${fixture.home} o empate (1X)`, dc1X, round2(1 / (dc1X * MODEL.BOOK_MARGIN)), true);
-    push('double_chance', `Empate o ${fixture.away} (X2)`, dcX2, round2(1 / (dcX2 * MODEL.BOOK_MARGIN)), true);
-    push('double_chance', `${fixture.home} o ${fixture.away} (12)`, dc12, round2(1 / (dc12 * MODEL.BOOK_MARGIN)), true);
-
-    push('goals', 'Más de 0.5 goles', goals.pOver['0.5'], round2(1 / (goals.pOver['0.5'] * MODEL.BOOK_MARGIN)), true);
-    push('goals', 'Más de 1.5 goles', goals.pOver['1.5'], round2(1 / (goals.pOver['1.5'] * MODEL.BOOK_MARGIN)), true);
-    push('goals', 'Más de 2.5 goles', goals.pOver['2.5'], round2(1 / (goals.pOver['2.5'] * MODEL.BOOK_MARGIN)), false);
-    push('goals', 'Más de 3.5 goles', goals.pOver['3.5'], round2(1 / (goals.pOver['3.5'] * MODEL.BOOK_MARGIN)), false);
-
-    push('btts', 'Ambos equipos marcan', goals.pBtts, round2(1 / (goals.pBtts * MODEL.BOOK_MARGIN)), bttsBacked);
-
-    push('corners', 'Más de 3.5 córners', corners.over35, round2(1 / (corners.over35 * MODEL.BOOK_MARGIN)), true);
-    push('corners', 'Más de 4.5 córners', corners.over45, round2(1 / (corners.over45 * MODEL.BOOK_MARGIN)), true);
-    push('corners', 'Más de 8.5 córners (total)', corners.over85, round2(1 / (corners.over85 * MODEL.BOOK_MARGIN)), false);
-
-    const homeShotsOver = poissonOverProb(home.shotsOnTarget, 3.5);
-    const awayShotsOver = poissonOverProb(away.shotsOnTarget, 3.5);
-    push('team_shots', `${fixture.home}: más de 3.5 tiros a puerta`, homeShotsOver, round2(1 / (homeShotsOver * MODEL.BOOK_MARGIN)), true);
-    push('team_shots', `${fixture.away}: más de 3.5 tiros a puerta`, awayShotsOver, round2(1 / (awayShotsOver * MODEL.BOOK_MARGIN)), true);
-
-    push('cards', 'Más de 3.5 tarjetas', cards.over35, round2(1 / (cards.over35 * MODEL.BOOK_MARGIN)), false);
-
-    const topScore = goals.topScorelines[0];
-    push('correct_score', `Resultado exacto ${topScore.h}-${topScore.a}`, topScore.p, round2(1 / (topScore.p * MODEL.BOOK_MARGIN)), false);
-
-    return bets;
-  }
-
-  /* =========================================================================
-     8. MOTIVOS
-     ========================================================================= */
-  function buildReasons(a, bet) {
-    const f = a.fixture, reasons = [];
-    if (bet.market === '1x2' || bet.market === 'double_chance') {
-      const eloHome = a.home.rating.elo, eloAway = a.away.rating.elo, diff = eloHome - eloAway;
-      if (Math.abs(diff) >= 4) reasons.push(`Diferencia de nivel estimada (Elo): ${diff > 0 ? f.home : f.away} +${Math.abs(diff)} sobre ${diff > 0 ? f.away : f.home}.`);
-      reasons.push(`Forma (últ. 10 partidos): ${f.home} ${a.home.points10}/30 pts — ${f.away} ${a.away.points10}/30 pts.`);
-      reasons.push(`xG neto por partido (estimado): ${f.home} ${round2(a.home.xgFor - a.home.xgAgainst)} — ${f.away} ${round2(a.away.xgFor - a.away.xgAgainst)}.`);
-      const hw = a.h2h.filter(g => g.hg > g.ag).length, aw = a.h2h.filter(g => g.ag > g.hg).length;
-      reasons.push(`Histórico directo (estimado): ${f.home} ${hw}V — ${f.away} ${aw}V en ${a.h2h.length} precedentes.`);
-      reasons.push(`${Math.round(a.signalAgreement * 4)}/4 indicadores del modelo coinciden con esta lectura.`);
-      if (a.hostAdvantageTeam) reasons.push(`${a.hostAdvantageTeam} juega como anfitrión en ${f.city}: pequeña ventaja de localía aplicada.`);
-    } else if (bet.market === 'goals') {
-      reasons.push(`Goles esperados combinados (modelo): ${round2(a.lambdaHome + a.lambdaAway)} por partido.`);
-      reasons.push(`${f.home} marcó en el ${Math.round(a.home.scoringRate * 100)}% de sus últimos 10 partidos.`);
-      reasons.push(`${f.away} marcó en el ${Math.round(a.away.scoringRate * 100)}% de sus últimos 10 partidos.`);
-      reasons.push(`Tiros a puerta combinados (estimado): ${round1(a.home.shotsOnTarget + a.away.shotsOnTarget)} por partido.`);
-    } else if (bet.market === 'btts') {
-      reasons.push(`${f.home}: marcó en el ${Math.round(a.home.scoringRate * 100)}% y encajó en el ${Math.round(a.home.concedingRate * 100)}% de sus últ. 10 partidos.`);
-      reasons.push(`${f.away}: marcó en el ${Math.round(a.away.scoringRate * 100)}% y encajó en el ${Math.round(a.away.concedingRate * 100)}% de sus últ. 10 partidos.`);
-      reasons.push(a.bttsBacked ? 'Ambos equipos muestran respaldo estadístico suficiente para este mercado.' : 'Respaldo estadístico limitado: se muestra con cautela, fuera del Modo Seguro.');
-    } else if (bet.market === 'corners') {
-      reasons.push(`Córners combinados esperados (estimado): ${a.corners.total} por partido.`);
-      reasons.push(`${f.home} promedia ${a.corners.home} córners propios; ${f.away} promedia ${a.corners.away}.`);
-    } else if (bet.market === 'team_shots') {
-      const isHome = bet.selection.startsWith(f.home);
-      const team = isHome ? a.home : a.away, name = isHome ? f.home : f.away;
-      reasons.push(`${name} promedia (estimado) ${team.shotsOnTarget} tiros a puerta por partido en sus últimos 10 encuentros.`);
-      reasons.push(`${name} promedia ${team.shotsTotal} tiros totales por partido.`);
-    } else if (bet.market === 'cards') {
-      reasons.push(`Media de tarjetas combinada (estimada): ${a.cards.total} por partido.`);
-      reasons.push('Mercado de mayor varianza (depende del árbitro, sin datos disponibles): fuera del Modo Seguro.');
+    if (aServes) {
+      if (serverWonGame) gamesA++; else { gamesB++; breaksB++; }
     } else {
-      reasons.push('Mercado especulativo (probabilidad baja, alta varianza): no se recomienda como apuesta principal.');
+      if (serverWonGame) gamesB++; else { gamesA++; breaksA++; }
     }
-    if (a.contextNote) reasons.push(`Contexto de grupo (estimado): ${a.contextNote}`);
-    return reasons;
+
+    if ((gamesA >= 6 || gamesB >= 6) && Math.abs(gamesA - gamesB) >= 2) break;
+    if (gamesA === 7 || gamesB === 7) break; // 7-5 o 7-6 ya cubiertos arriba
+
+    aServes = !aServes;
   }
 
-  /* =========================================================================
-     9. ESTADO DE LA APP Y RENDERIZADO
-     ========================================================================= */
-  const App = {
-    analyses: [], liveOddsMap: null, refreshSalt: 'v1',
-    filters: { market: 'all', date: 'all', search: '', sort: 'confidence' },
-    safeMode: Settings.safeMode,
-    fixtureStatus: 'not-configured', oddsStatus: 'not-configured',
-    dateFilterInitialized: false
+  return {
+    winner: gamesA > gamesB ? "A" : "B",
+    gamesA, gamesB, breaksA, breaksB, acesA, acesB
   };
+}
 
-  async function loadAllData() {
-    setRefreshing(true);
-    const now = new Date();
-    const [fx, od] = await Promise.all([tryFetchLiveFixtures(), tryFetchLiveOdds()]);
-    App.fixtureStatus = fx.status; App.oddsStatus = od.status;
-    const fixtures = fx.data || FALLBACK_FIXTURES;
-    App.liveOddsMap = od.data;
-    App.refreshSalt = String(Date.now());
+// Simula un partido a mejor de 3 sets. Devuelve estadísticas agregadas.
+function simulateMatch(playerA, playerB) {
+  let setsA = 0, setsB = 0;
+  let totalGames = 0, breaksA = 0, breaksB = 0, acesA = 0, acesB = 0;
+  const setScores = [];
+  let aServesFirst = Math.random() < 0.5;
 
-    const groupFixturesByTeam = buildGroupFixturesByTeam(fixtures);
-    const liveDataBonus = fx.status === 'live' || od.status === 'live';
-    App.analyses = fixtures.map(f => analyzeMatch(f, od.data, App.refreshSalt, liveDataBonus, now, groupFixturesByTeam));
-
-    renderSourceStrip();
-    populateDateFilter(App.dateFilterInitialized); // BUGFIX: preserva la jornada elegida por el usuario
-    App.dateFilterInitialized = true;
-    populateMatchSelector();
-    renderAll();
-    setRefreshing(false);
+  while (setsA < 2 && setsB < 2) {
+    const set = simulateSet(playerA, playerB, aServesFirst);
+    setScores.push(`${set.gamesA}-${set.gamesB}`);
+    totalGames += set.gamesA + set.gamesB;
+    breaksA += set.breaksA; breaksB += set.breaksB;
+    acesA += set.acesA; acesB += set.acesB;
+    if (set.winner === "A") setsA++; else setsB++;
+    // alternar quién saca primero en el set siguiente (aprox. realista)
+    aServesFirst = !aServesFirst;
   }
 
-  function setRefreshing(isLoading) {
-    const btn = document.getElementById('refreshBtn');
-    btn.classList.toggle('is-loading', isLoading);
-    btn.disabled = isLoading;
+  return {
+    winner: setsA > setsB ? "A" : "B",
+    setsA, setsB, setScores: setScores.join(", "),
+    scoreLine: `${setsA}-${setsB}`,
+    totalGames, breaksA, breaksB, acesA, acesB
+  };
+}
+
+/* -------------------------------------------------------------------------
+   3. MOTOR DE SIMULACIÓN MASIVA (20.000 iteraciones)
+   ------------------------------------------------------------------------- */
+function runMonteCarlo(playerAKey, playerBKey, n) {
+  const playerA = PLAYERS[playerAKey];
+  const playerB = PLAYERS[playerBKey];
+
+  let winsA = 0, winsB = 0;
+  const scoreCounts = {}; // e.g. "2-0 A" -> count
+  const totalGamesArr = [];
+  const breaksAArr = [], breaksBArr = [];
+  const acesAArr = [], acesBArr = [];
+
+  for (let i = 0; i < n; i++) {
+    const m = simulateMatch(playerA, playerB);
+    if (m.winner === "A") winsA++; else winsB++;
+
+    const label = m.winner === "A"
+      ? `${m.setsA}-${m.setsB} ${playerA.name}`
+      : `${m.setsB}-${m.setsA} ${playerB.name}`;
+    scoreCounts[label] = (scoreCounts[label] || 0) + 1;
+
+    totalGamesArr.push(m.totalGames);
+    breaksAArr.push(m.breaksA);
+    breaksBArr.push(m.breaksB);
+    acesAArr.push(m.acesA);
+    acesBArr.push(m.acesB);
   }
 
-  function renderSourceStrip() {
-    const fxChip = App.fixtureStatus === 'live' ? { dot: 'dot-live', text: 'Calendario: <strong>EN VIVO</strong> (football-data.org)' }
-      : App.fixtureStatus === 'error' ? { dot: 'dot-error', text: 'Calendario en vivo: error de conexión — usando calendario oficial embebido' }
-      : { dot: 'dot-static', text: 'Calendario: <strong>REAL</strong> (fase de grupos oficial, verificado, no en vivo)' };
-    const odChip = App.oddsStatus === 'live' ? { dot: 'dot-live', text: 'Cuotas: <strong>EN VIVO</strong> (' + (App.analyses[0]?.odds?.source || 'The Odds API') + ')' }
-      : App.oddsStatus === 'error' ? { dot: 'dot-error', text: 'Cuotas en vivo: error de conexión — usando cuotas simuladas' }
-      : { dot: 'dot-estimated', text: 'Cuotas: <strong>SIMULADAS</strong> (modelo + margen de casa)' };
-    const statsChip = { dot: 'dot-estimated', text: 'xG / tiros / córners / tarjetas: <strong>ESTIMADOS</strong> (sin API gratuita de frontend disponible)' };
-    const injChip = { dot: 'dot-estimated', text: 'Lesiones, alineaciones y contexto de grupo: <strong>ESTIMADOS</strong> (ilustrativo, no oficial)' };
-    const refChip = { dot: 'dot-error', text: 'Árbitros: <strong>NO DISPONIBLE</strong> (ninguna API gratuita lo ofrece — no se inventa)' };
-    document.getElementById('sourceStrip').innerHTML = [fxChip, odChip, statsChip, injChip, refChip]
-      .map(c => `<span class="source-chip"><span class="source-dot ${c.dot}"></span>${c.text}</span>`).join('');
-  }
+  return {
+    playerA, playerB, n,
+    winsA, winsB,
+    winProbA: winsA / n, winProbB: winsB / n,
+    scoreCounts,
+    totalGamesArr, breaksAArr, breaksBArr, acesAArr, acesBArr
+  };
+}
 
-  function populateDateFilter(preserveSelection) {
-    const sel = document.getElementById('dateFilter');
-    const days = [...new Set(App.analyses.map(a => dateKey(a.fixture.date)))];
-    days.sort((a, b) => new Date(App.analyses.find(x => dateKey(x.fixture.date) === a).fixture.date) - new Date(App.analyses.find(x => dateKey(x.fixture.date) === b).fixture.date));
-    sel.innerHTML = `<option value="all">Todas las jornadas</option>` + days.map(d => {
-      const count = App.analyses.filter(a => dateKey(a.fixture.date) === d).length;
-      return `<option value="${d}">${d} (${count} partido${count > 1 ? 's' : ''})</option>`;
-    }).join('');
-
-    if (preserveSelection && (App.filters.date === 'all' || days.includes(App.filters.date))) { sel.value = App.filters.date; return; }
-
-    const todayKey = new Date().toLocaleDateString('es-ES', { year: 'numeric', month: '2-digit', day: '2-digit' });
-    if (days.includes(todayKey)) sel.value = todayKey;
-    else {
-      const next = App.analyses.filter(a => new Date(a.fixture.date) >= new Date()).sort((a, b) => new Date(a.fixture.date) - new Date(b.fixture.date))[0];
-      sel.value = next ? dateKey(next.fixture.date) : 'all';
-    }
-    App.filters.date = sel.value;
-  }
-
-  function populateMatchSelector() {
-    const sel = document.getElementById('matchSelector');
-    const list = App.analyses.slice().sort((a, b) => new Date(a.fixture.date) - new Date(b.fixture.date));
-    sel.innerHTML = `<option value="">▼ Elige un partido para ver su análisis completo…</option>` +
-      list.map(a => `<option value="${a.fixture.id}">${a.finished ? '✓ ' : ''}${formatKickoff(a.fixture.date)} — ${a.fixture.home} vs ${a.fixture.away}${a.finished ? ' (finalizado)' : ''}</option>`).join('');
-  }
-
-  // Filtro de fecha SOLAMENTE (base reutilizada por el resto de funciones para
-  // que todas las secciones de la app vean siempre el mismo conjunto de partidos).
-  function getDateFilteredAnalyses() {
-    let list = App.analyses.slice();
-    if (App.filters.date !== 'all') list = list.filter(a => dateKey(a.fixture.date) === App.filters.date);
-    return list;
-  }
-
-  function getFilteredAnalyses() {
-    let list = getDateFilteredAnalyses();
-    if (App.filters.search) {
-      const q = normalizeStr(App.filters.search);
-      list = list.filter(a => normalizeStr(a.fixture.home).includes(q) || normalizeStr(a.fixture.away).includes(q));
-    }
-    const sortKey = App.filters.sort;
-    list.sort((a, b) => {
-      if (sortKey === 'time') return new Date(a.fixture.date) - new Date(b.fixture.date);
-      if (sortKey === 'ev') {
-        const pickA = App.safeMode ? a.safeRecommendation : a.bestValueBet, pickB = App.safeMode ? b.safeRecommendation : b.bestValueBet;
-        return (pickB?.recScore ?? -Infinity) - (pickA?.recScore ?? -Infinity);
-      }
-      return b.confidence - a.confidence;
-    });
-    return list;
-  }
-
-  // BUGFIX CENTRAL: las apuestas SIEMPRE se construyen a partir de los
-  // partidos de la jornada seleccionada (getDateFilteredAnalyses) y se
-  // excluyen los partidos ya finalizados. Antes se usaba App.analyses
-  // completo, lo que mezclaba otras jornadas y partidos pasados.
-  function getFilteredBets() {
-    let bets = getDateFilteredAnalyses()
-      .filter(a => !a.finished)
-      .flatMap(a => a.valueBets.map(b => ({ ...b, fixture: a.fixture, riskOfMatch: a.risk, matchConfidence: a.confidence })));
-    bets = bets.filter(b => b.prob >= MODEL.MIN_PROB_SURFACE);
-    if (App.safeMode) bets = bets.filter(b => b.safe && b.prob >= 0.45 && b.matchConfidence >= 55);
-    if (App.filters.market !== 'all') bets = bets.filter(b => b.market === App.filters.market);
-    bets.sort((a, b) => b.recScore - a.recScore);
-    return bets;
-  }
-
-  function renderAll() {
-    const list = getFilteredAnalyses();
-    renderDashboardStats(list);
-    renderTicker();
-    renderMatchesGrid(list);
-    renderBestBets();
-    renderAnalyticsPanel();
-  }
-
-  function renderDashboardStats(list) {
-    const upcoming = list.filter(a => !a.finished);
-    const safePicks = upcoming.filter(a => a.safeRecommendation).length;
-    const avgConfidence = upcoming.length ? upcoming.reduce((s, a) => s + a.confidence, 0) / upcoming.length : 0;
-    const highConfidenceMatches = upcoming.filter(a => a.confidence >= 70).length;
-
-    const cards = App.safeMode ? [
-      { label: 'Partidos por jugar', value: upcoming.length, sub: App.filters.date === 'all' ? 'todas las jornadas' : App.filters.date, accent: 'var(--accent-blue)' },
-      { label: 'Recomendaciones seguras', value: safePicks, sub: 'confianza ≥ 55% y prob. ≥ 45%', accent: 'var(--accent-pitch)' },
-      { label: 'Partidos de alta confianza', value: highConfidenceMatches, sub: 'confianza del modelo ≥ 70%', accent: 'var(--accent-gold)' },
-      { label: 'Confianza media IA', value: `${Math.round(avgConfidence)}%`, sub: 'índice 0-100 (fórmula conservadora)', accent: 'var(--accent-gold)' }
-    ] : [
-      { label: 'Partidos por jugar', value: upcoming.length, sub: App.filters.date === 'all' ? 'todas las jornadas' : App.filters.date, accent: 'var(--accent-blue)' },
-      { label: 'Apuestas con prob. ≥ 15%', value: getFilteredBets().length, sub: 'umbral mínimo para ser mostradas', accent: 'var(--accent-pitch)' },
-      { label: 'Partidos de alta confianza', value: highConfidenceMatches, sub: 'confianza del modelo ≥ 70%', accent: 'var(--accent-gold)' },
-      { label: 'Confianza media IA', value: `${Math.round(avgConfidence)}%`, sub: 'índice 0-100 (fórmula conservadora)', accent: 'var(--accent-gold)' }
-    ];
-
-    document.getElementById('dashboardStats').innerHTML = cards.map(c => `
-      <div class="stat-card" style="--stat-accent:${c.accent}">
-        <div class="stat-label">${c.label}</div>
-        <div class="stat-value">${c.value}</div>
-        <div class="stat-sub">${c.sub}</div>
-      </div>`).join('');
-  }
-
-  function renderTicker() {
-    const bets = getFilteredBets().slice(0, 12).map(b => ({ ...b, label: `${TEAM_META[b.fixture.home]?.code || b.fixture.home} vs ${TEAM_META[b.fixture.away]?.code || b.fixture.away}` }));
-    const track = document.getElementById('tickerTrack');
-    if (!bets.length) { track.innerHTML = '<span class="ticker-item">Sin recomendaciones para la jornada y filtros actuales.</span>'; return; }
-    const html = bets.map(b => `<span class="ticker-item">⚽ ${b.label} — ${b.selection} @ ${fmtOdds(b.bookOdds)} · ${fmtPct(b.prob)}<span class="tk-sep">·</span></span>`).join('');
-    track.innerHTML = html + html;
-  }
-
-  function riskLabel(risk) { return { low: 'BAJO', medium: 'MEDIO', high: 'ALTO' }[risk]; }
-  function marketDisplayName(key) {
-    return { '1x2': 'Resultado 1X2', double_chance: 'Doble oportunidad', goals: 'Total goles', btts: 'Ambos marcan', corners: 'Córners', team_shots: 'Tiros a puerta', cards: 'Tarjetas', correct_score: 'Resultado exacto' }[key] || key;
-  }
-
-  function renderMatchesGrid(list) {
-    const grid = document.getElementById('matchesGrid');
-    document.getElementById('matchCount').textContent = `${list.length} partido${list.length !== 1 ? 's' : ''}`;
-    document.getElementById('emptyState').classList.toggle('hidden', list.length > 0);
-
-    grid.innerHTML = list.map(a => {
-      const f = a.fixture;
-      const homeM = TEAM_META[f.home] || {}; const awayM = TEAM_META[f.away] || {};
-      const outcomeLabel = a.predictedOutcome === 'home' ? `Victoria ${f.home}` : a.predictedOutcome === 'away' ? `Victoria ${f.away}` : 'Empate';
-      const pick = App.safeMode ? a.safeRecommendation : a.bestValueBet;
-      const footer = a.finished
-        ? `<div class="finished-note">Partido finalizado — sin recomendaciones activas</div>`
-        : `<div class="match-card-footer">
-            <div class="best-pick">
-              <span class="best-pick-label">${App.safeMode ? 'Pick seguro' : 'Mejor apuesta'}</span>
-              <span class="best-pick-value">${pick ? pick.selection : 'Sin recomendación clara'}</span>
-            </div>
-            ${pick ? `<span class="ev-tag ev-pos">${fmtPct(pick.prob)}</span>` : ''}
-            <span class="risk-pill risk-${a.risk}">${riskLabel(a.risk)}</span>
-          </div>`;
-      return `
-      <article class="match-card ${a.finished ? 'is-finished' : ''}" data-id="${f.id}">
-        <div class="match-card-top">
-          <span>${formatKickoff(f.date)} · ${f.stadium}</span>
-          <span class="badge-group">
-            <span class="badge-tag">Grupo ${f.group}</span>
-            ${a.finished ? '<span class="badge-tag finished-badge">FINALIZADO</span>' : ''}
-            ${!a.finished && pick && App.safeMode ? '<span class="badge-tag badge-value">🛡 SEGURA</span>' : ''}
-          </span>
-        </div>
-        <div class="teams-row">
-          <div class="team-block home"><span class="team-flag">${homeM.flag || '🏳️'}</span><span class="team-name">${f.home}</span><span class="team-code">${homeM.code || ''}</span></div>
-          <div class="vs-block"><div class="confidence-dial" style="--pct:${a.confidence}" data-pct="${a.confidence}"></div><span class="vs-label">IA</span></div>
-          <div class="team-block away"><span class="team-flag">${awayM.flag || '🏳️'}</span><span class="team-name">${f.away}</span><span class="team-code">${awayM.code || ''}</span></div>
-        </div>
-        <div class="odds-row">
-          <div class="odds-chip"><div class="odds-chip-label">1 · ${homeM.code || ''}</div><div class="odds-chip-value">${fmtOdds(a.odds.home)}</div></div>
-          <div class="odds-chip"><div class="odds-chip-label">X</div><div class="odds-chip-value">${fmtOdds(a.odds.draw)}</div></div>
-          <div class="odds-chip"><div class="odds-chip-label">2 · ${awayM.code || ''}</div><div class="odds-chip-value">${fmtOdds(a.odds.away)}</div></div>
-        </div>
-        <div style="font-size:0.82rem;color:var(--text-secondary)">Predicción IA: <strong style="color:var(--text-primary)">${outcomeLabel}</strong></div>
-        ${footer}
-      </article>`;
-    }).join('');
-
-    grid.querySelectorAll('.match-card').forEach(card => card.addEventListener('click', () => openMatchModal(card.dataset.id)));
-  }
-
-  /* ---- Helper compartido: agrupa una lista de apuestas en 3 columnas de riesgo ---- */
-  function renderRiskColumns(containerEl, bets, options = {}) {
-    const { compact = false, maxPerTier = 6 } = options;
-    const tiers = { low: [], medium: [], high: [] };
-    bets.forEach(b => tiers[b.riskTier]?.push(b));
-    const tierInfo = { low: { icon: '🟢', label: 'RIESGO BAJO' }, medium: { icon: '🟡', label: 'RIESGO MEDIO' }, high: { icon: '🔴', label: 'RIESGO ALTO' } };
-
-    const cols = ['low', 'medium', 'high'].filter(t => tiers[t].length > 0).map(tier => {
-      const items = tiers[tier].slice(0, maxPerTier);
-      return `<div class="risk-column tier-${tier}">
-        <div class="risk-column-header">${tierInfo[tier].icon} ${tierInfo[tier].label}<span class="rc-count">${tiers[tier].length}</span></div>
-        ${items.map(b => `
-          <div class="risk-bet-card">
-            ${b.fixture ? `<div class="rb-match">${b.fixture.home} vs ${b.fixture.away} · ${marketDisplayName(b.market)}</div>` : `<div class="rb-match">${marketDisplayName(b.market)}</div>`}
-            <div class="rb-pick">${b.selection}</div>
-            <div class="rb-meta"><span class="rb-prob">${fmtPct(b.prob)}</span><span>cuota ${fmtOdds(b.bookOdds)}</span></div>
-            ${!compact && b._reasons ? `<ul class="rb-reasons">${b._reasons.slice(0, 2).map(r => `<li>${r}</li>`).join('')}</ul>` : ''}
-          </div>`).join('')}
-      </div>`;
-    });
-
-    if (!cols.length) { containerEl.innerHTML = ''; return false; }
-    containerEl.innerHTML = cols.join('');
-    return true;
-  }
-
-  function renderBestBets() {
-    document.getElementById('bestBetsPanel').querySelector('h2').textContent = App.safeMode ? '🛡 Apuestas seguras del día' : '🏆 Apuestas del día';
-    document.getElementById('bestBetsSub').textContent = App.filters.date === 'all' ? 'Todas las jornadas, solo partidos por jugar, agrupadas por riesgo' : `Jornada ${App.filters.date} · solo partidos por jugar, agrupadas por riesgo`;
-    const bets = getFilteredBets();
-    const hasContent = renderRiskColumns(document.getElementById('riskColumns'), bets, { maxPerTier: 6 });
-    document.getElementById('bestBetsEmpty').classList.toggle('hidden', hasContent);
-  }
-
-  /* =========================================================================
-     PANEL ANALÍTICO NATIVO (sin librerías externas, nunca vacío a medias)
-     ========================================================================= */
-  function renderAnalyticsPanel() {
-    const container = document.getElementById('analyticsContent');
-    const list = getDateFilteredAnalyses().filter(a => !a.finished);
-
-    if (!list.length) {
-      container.innerHTML = `<div class="analytics-empty">No hay partidos por jugar en esta jornada para analizar.</div>`;
-      return;
-    }
-
-    const bets = list.flatMap(a => a.valueBets.filter(b => b.prob >= MODEL.MIN_PROB_SURFACE && (!App.safeMode || b.safe)).map(b => ({ ...b, fixture: a.fixture })));
-
-    const blocks = [];
-
-    // Número de partidos + confianza media
-    const avgConfidence = list.reduce((s, a) => s + a.confidence, 0) / list.length;
-    blocks.push(`<div class="analytics-block"><h4>Partidos analizados</h4><div class="ab-big">${list.length}</div><div class="ab-sub">Confianza media de la jornada: ${Math.round(avgConfidence)}%</div></div>`);
-
-    // Promedio de goles y córners esperados
-    const avgGoals = list.reduce((s, a) => s + a.lambdaHome + a.lambdaAway, 0) / list.length;
-    const avgCorners = list.reduce((s, a) => s + a.corners.total, 0) / list.length;
-    blocks.push(`<div class="analytics-block"><h4>Promedios esperados (modelo)</h4>
-      <div class="hbar-row"><span class="hbar-label">Goles / partido</span><div class="hbar-track"><div class="hbar-fill" style="width:${clamp(avgGoals / 4 * 100, 4, 100)}%;background:var(--accent-pitch)"></div></div><span class="hbar-value">${round1(avgGoals)}</span></div>
-      <div class="hbar-row"><span class="hbar-label">Córners / partido</span><div class="hbar-track"><div class="hbar-fill" style="width:${clamp(avgCorners / 12 * 100, 4, 100)}%;background:var(--accent-gold)"></div></div><span class="hbar-value">${round1(avgCorners)}</span></div>
-    </div>`);
-
-    // Distribución de apuestas por riesgo (si hay apuestas)
-    if (bets.length) {
-      const counts = { low: 0, medium: 0, high: 0 };
-      bets.forEach(b => counts[b.riskTier]++);
-      const max = Math.max(counts.low, counts.medium, counts.high, 1);
-      blocks.push(`<div class="analytics-block"><h4>Distribución de apuestas por riesgo</h4>
-        <div class="hbar-row"><span class="hbar-label">🟢 Bajo</span><div class="hbar-track"><div class="hbar-fill" style="width:${counts.low / max * 100}%;background:var(--accent-pitch)"></div></div><span class="hbar-value">${counts.low}</span></div>
-        <div class="hbar-row"><span class="hbar-label">🟡 Medio</span><div class="hbar-track"><div class="hbar-fill" style="width:${counts.medium / max * 100}%;background:var(--accent-amber)"></div></div><span class="hbar-value">${counts.medium}</span></div>
-        <div class="hbar-row"><span class="hbar-label">🔴 Alto</span><div class="hbar-track"><div class="hbar-fill" style="width:${counts.high / max * 100}%;background:var(--accent-red)"></div></div><span class="hbar-value">${counts.high}</span></div>
-      </div>`);
-
-      // Mercados más recomendados
-      const byMarket = {};
-      bets.forEach(b => { byMarket[b.market] = (byMarket[b.market] || 0) + 1; });
-      const topMarkets = Object.entries(byMarket).sort((a, b) => b[1] - a[1]).slice(0, 5);
-      const maxM = topMarkets[0]?.[1] || 1;
-      blocks.push(`<div class="analytics-block"><h4>Mercados más recomendados</h4>
-        ${topMarkets.map(([m, c]) => `<div class="hbar-row"><span class="hbar-label">${marketDisplayName(m)}</span><div class="hbar-track"><div class="hbar-fill" style="width:${c / maxM * 100}%;background:var(--accent-blue)"></div></div><span class="hbar-value">${c}</span></div>`).join('')}
-      </div>`);
-    }
-
-    // Equipos con mayor probabilidad de victoria
-    const favorites = list.map(a => a.goals.pHome >= a.goals.pAway ? { team: a.fixture.home, prob: a.goals.pHome, rival: a.fixture.away } : { team: a.fixture.away, prob: a.goals.pAway, rival: a.fixture.home })
-      .sort((x, y) => y.prob - x.prob).slice(0, 5);
-    if (favorites.length) {
-      const maxF = favorites[0].prob;
-      blocks.push(`<div class="analytics-block"><h4>Mayor probabilidad de victoria</h4>
-        ${favorites.map(fv => `<div class="hbar-row"><span class="hbar-label">${TEAM_META[fv.team]?.flag || ''} ${fv.team}</span><div class="hbar-track"><div class="hbar-fill" style="width:${fv.prob / maxF * 100}%;background:var(--accent-pitch)"></div></div><span class="hbar-value">${fmtPct(fv.prob)}</span></div>`).join('')}
-      </div>`);
-    }
-
-    container.innerHTML = `<div class="analytics-grid">${blocks.join('')}</div>`;
-  }
-
-  /* =========================================================================
-     MODAL DE DETALLE DE PARTIDO
-     ========================================================================= */
-  function buildRecommendationTab(a) {
-    if (a.finished) return `<div class="recommendation-box no-pick"><div class="rec-title">Partido finalizado</div><p style="font-size:0.84rem">Este encuentro ya se ha disputado, así que no se muestran recomendaciones activas. Puedes consultar sus estadísticas y contexto en las demás pestañas.</p></div>`;
-
-    let bets = a.valueBets.filter(b => b.prob >= MODEL.MIN_PROB_SURFACE);
-    if (App.safeMode) bets = bets.filter(b => b.safe);
-    bets = bets.map(b => ({ ...b, _reasons: buildReasons(a, b) })).sort((x, y) => y.recScore - x.recScore);
-
-    if (!bets.length) return `<div class="recommendation-box no-pick"><div class="rec-title">Sin recomendaciones para este partido</div><p style="font-size:0.84rem">Encuentro muy equilibrado o por debajo de los umbrales mínimos del modelo. ${App.safeMode ? 'Prueba a desactivar el Modo Seguro para ver más opciones.' : ''}</p></div>`;
-
-    const top = bets[0];
-    const topBox = `<div class="recommendation-box">
-      <div class="rec-title">RECOMENDACIÓN PRINCIPAL — ${top.selection}</div>
-      <div class="rec-meta-row">
-        <div class="rec-meta-item"><div class="rm-label">Probabilidad</div><div class="rm-value">${fmtPct(top.prob)}</div></div>
-        <div class="rec-meta-item"><div class="rm-label">Confianza del partido</div><div class="rm-value">${a.confidence}%</div></div>
-        <div class="rec-meta-item"><div class="rm-label">Cuota</div><div class="rm-value">${fmtOdds(top.bookOdds)}</div></div>
-      </div>
-      <div style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:0.4rem">Motivos</div>
-      <ul class="rec-reasons">${top._reasons.map(r => `<li>${r}</li>`).join('')}</ul>
-    </div>`;
-
-    const colsContainerId = 'modalRiskCols';
-    setTimeout(() => { renderRiskColumns(document.getElementById(colsContainerId), bets, { compact: false, maxPerTier: 3 }); }, 0);
-
-    return `${topBox}
-      <p style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin:1rem 0 0.6rem">Todas las opciones de este partido, por riesgo</p>
-      <div class="risk-columns" id="${colsContainerId}"></div>`;
-  }
-
-  function openMatchModal(matchId) {
-    const a = App.analyses.find(x => x.fixture.id === matchId);
-    if (!a) return;
-    const f = a.fixture;
-    const homeM = TEAM_META[f.home] || {}; const awayM = TEAM_META[f.away] || {};
-
-    const statRow = (label, hVal, aVal, max) => `
-      <div class="stat-compare-row"><div class="v-home">${hVal}</div><div class="v-label">${label}</div><div class="v-away">${aVal}</div></div>
-      <div class="bar-track"><div class="bar-fill-home" style="width:${(hVal / max) * 50}%;margin-left:${50 - (hVal / max) * 50}%"></div><div class="bar-fill-away" style="width:${(aVal / max) * 50}%"></div></div>`;
-    const probRow = (label, prob) => `<div class="prob-bar-row"><span class="pb-label">${label}</span><div class="prob-bar-track"><div class="prob-bar-fill" style="width:${prob * 100}%"></div></div><span class="pb-value">${fmtPct(prob)}</span></div>`;
-    const formIcons = (arr) => arr.map(r => `<span class="badge-tag" style="color:${r.result === 'W' ? 'var(--accent-pitch)' : r.result === 'D' ? 'var(--accent-amber)' : 'var(--accent-red)'}">${r.result} ${r.gf}-${r.ga}</span>`).join(' ');
-
-    document.getElementById('modalContent').innerHTML = `
-      <div class="modal-header">
-        <div>
-          <div class="modal-teams">${homeM.flag || ''} ${f.home} <span style="color:var(--text-muted)">vs</span> ${f.away} ${awayM.flag || ''}</div>
-          <div class="modal-meta">${formatKickoff(f.date)} · ${f.stadium}, ${f.city} · Grupo ${f.group} <span class="src-tag ${f.scheduleSource === 'live-api' ? 'src-live' : 'src-real'}">${f.scheduleSource === 'live-api' ? 'CALENDARIO EN VIVO' : 'CALENDARIO REAL'}</span> ${a.finished ? '<span class="src-tag" style="background:rgba(108,117,137,0.18);color:var(--text-muted)">FINALIZADO</span>' : ''}</div>
-        </div>
-        <div class="confidence-dial" style="--pct:${a.confidence}" data-pct="${a.confidence}"></div>
-      </div>
-
-      <div class="tabs">
-        <button class="tab-btn active" data-tab="recomendacion">Recomendación</button>
-        <button class="tab-btn" data-tab="resumen">Resumen</button>
-        <button class="tab-btn" data-tab="stats">Estadísticas</button>
-        <button class="tab-btn" data-tab="h2h">H2H</button>
-        <button class="tab-btn" data-tab="plantilla">Plantilla</button>
-      </div>
-
-      <div class="tab-panel active" data-panel="recomendacion">${buildRecommendationTab(a)}</div>
-
-      <div class="tab-panel" data-panel="resumen">
-        ${probRow(`Gana ${f.home}`, a.goals.pHome)}
-        ${probRow('Empate', a.goals.pDraw)}
-        ${probRow(`Gana ${f.away}`, a.goals.pAway)}
-        <p style="margin-top:0.8rem;font-size:0.85rem;color:var(--text-secondary)">
-          Goles esperados (xG modelo): <strong style="color:var(--text-primary)">${a.lambdaHome}</strong> — <strong style="color:var(--text-primary)">${a.lambdaAway}</strong>.
-          Resultado exacto más probable: <strong style="color:var(--text-primary)">${a.goals.topScorelines[0].h}-${a.goals.topScorelines[0].a}</strong> (${fmtPct(a.goals.topScorelines[0].p)}).
-        </p>
-        <p style="margin-top:0.5rem;font-size:0.85rem;color:var(--text-secondary)">${Math.round(a.signalAgreement * 4)}/4 señales del modelo coinciden con la predicción.${a.contextNote ? ` ⚠ ${a.contextNote}` : ''}</p>
-      </div>
-
-      <div class="tab-panel" data-panel="stats">
-        <p style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin-bottom:0.5rem">Últimos 10 partidos <span class="src-tag src-estimado">ESTIMADO</span></p>
-        ${statRow('Puntos (últ. 10)', a.home.points10, a.away.points10, 30)}
-        ${statRow('Goles a favor (últ. 10)', a.home.goalsFor10, a.away.goalsFor10, 24)}
-        ${statRow('Goles en contra (últ. 10)', a.home.goalsAgainst10, a.away.goalsAgainst10, 24)}
-        <p style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin:0.9rem 0 0.5rem">Últimos 5 partidos</p>
-        ${statRow('Puntos (últ. 5)', a.home.points5, a.away.points5, 15)}
-        ${statRow('Goles a favor (últ. 5)', a.home.goalsFor5, a.away.goalsFor5, 14)}
-        ${statRow('Goles en contra (últ. 5)', a.home.goalsAgainst5, a.away.goalsAgainst5, 14)}
-        <p style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted);margin:0.9rem 0 0.5rem">Estadísticas por partido</p>
-        ${statRow('xG', a.home.xgFor, a.away.xgFor, 3)}
-        ${statRow('xGA', a.home.xgAgainst, a.away.xgAgainst, 3)}
-        ${statRow('Tiros totales', a.home.shotsTotal, a.away.shotsTotal, 24)}
-        ${statRow('Tiros a puerta', a.home.shotsOnTarget, a.away.shotsOnTarget, 12)}
-        ${statRow('Córners', a.home.corners, a.away.corners, 10)}
-        ${statRow('Tarjetas', a.home.cardsAvg, a.away.cardsAvg, 5)}
-        ${statRow('Posesión (%)', a.home.possession, a.away.possession, 70)}
-        <p style="margin-top:0.6rem;font-size:0.78rem;color:var(--text-muted)">Forma (últ. 10) — ${f.home}: ${formIcons(a.home.last10.slice().reverse())}</p>
-        <p style="margin-top:0.3rem;font-size:0.78rem;color:var(--text-muted)">Forma (últ. 10) — ${f.away}: ${formIcons(a.away.last10.slice().reverse())}</p>
-      </div>
-
-      <div class="tab-panel" data-panel="h2h">
-        <div class="h2h-list">${a.h2h.map(g => `<div class="h2h-row"><span>${g.year} · ${g.home} vs ${g.away}</span><span class="h2h-score">${g.hg}-${g.ag}</span></div>`).join('')}</div>
-        <p style="margin-top:0.7rem;font-size:0.76rem;color:var(--text-muted)">Historial estimado a partir del nivel relativo de ambas selecciones (no son resultados oficiales) <span class="src-tag src-estimado">ESTIMADO</span>.</p>
-      </div>
-
-      <div class="tab-panel" data-panel="plantilla">
-        <p class="lineup-note">⚠️ Alineaciones, lesiones y sanciones son una estimación ilustrativa del modelo, no la convocatoria oficial confirmada por el cuerpo técnico.</p>
-        <h4 style="margin-bottom:0.5rem;font-size:0.9rem">${f.home}</h4>
-        ${a.home.players.map(([name, w]) => `<div class="player-row"><span class="player-name">${name}</span><span class="player-meta">Tiros a puerta est. ${round1(w * a.home.shotsOnTarget * 2.2)} · prob. gol ${fmtPct(a.scorerPool.find(s => s.name === name)?.prob || 0)}</span></div>`).join('') || '<p style="font-size:0.8rem;color:var(--text-muted)">Plantilla no disponible (selección pendiente de repechaje).</p>'}
-        ${a.home.injuries.map(inj => `<div class="player-row"><span class="player-name" style="color:var(--accent-red)">${inj.name}</span><span class="player-meta">${inj.status}</span></div>`).join('')}
-        <h4 style="margin:1rem 0 0.5rem;font-size:0.9rem">${f.away}</h4>
-        ${a.away.players.map(([name, w]) => `<div class="player-row"><span class="player-name">${name}</span><span class="player-meta">Tiros a puerta est. ${round1(w * a.away.shotsOnTarget * 2.2)} · prob. gol ${fmtPct(a.scorerPool.find(s => s.name === name)?.prob || 0)}</span></div>`).join('') || '<p style="font-size:0.8rem;color:var(--text-muted)">Plantilla no disponible (selección pendiente de repechaje).</p>'}
-        ${a.away.injuries.map(inj => `<div class="player-row"><span class="player-name" style="color:var(--accent-red)">${inj.name}</span><span class="player-meta">${inj.status}</span></div>`).join('')}
-      </div>
-    `;
-
-    document.getElementById('modalContent').querySelectorAll('.tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.getElementById('modalContent').querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.getElementById('modalContent').querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-        btn.classList.add('active');
-        document.getElementById('modalContent').querySelector(`.tab-panel[data-panel="${btn.dataset.tab}"]`).classList.add('active');
-      });
-    });
-
-    document.getElementById('matchModal').classList.remove('hidden');
-  }
-
-  /* =========================================================================
-     10. EVENTOS DE INTERFAZ
-     ========================================================================= */
-  function initEvents() {
-    document.getElementById('refreshBtn').addEventListener('click', loadAllData);
-
-    document.getElementById('searchInput').addEventListener('input', (e) => { App.filters.search = e.target.value.trim(); renderMatchesGrid(getFilteredAnalyses()); });
-
-    document.getElementById('marketFilter').addEventListener('change', (e) => { App.filters.market = e.target.value; renderBestBets(); });
-
-    document.getElementById('dateFilter').addEventListener('change', (e) => { App.filters.date = e.target.value; renderAll(); });
-
-    document.getElementById('matchSelector').addEventListener('change', (e) => { if (e.target.value) { openMatchModal(e.target.value); e.target.value = ''; } });
-
-    document.getElementById('safeModeToggle').addEventListener('change', (e) => { App.safeMode = e.target.checked; Settings.setSafeMode(App.safeMode); renderAll(); });
-
-    document.querySelectorAll('.sort-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        App.filters.sort = btn.dataset.sort;
-        renderMatchesGrid(getFilteredAnalyses());
-      });
-    });
-
-    document.getElementById('modalClose').addEventListener('click', () => document.getElementById('matchModal').classList.add('hidden'));
-    document.getElementById('matchModal').addEventListener('click', (e) => { if (e.target.id === 'matchModal') e.currentTarget.classList.add('hidden'); });
-
-    const settingsModal = document.getElementById('settingsModal');
-    document.getElementById('settingsBtn').addEventListener('click', () => {
-      document.getElementById('oddsApiKey').value = Settings.oddsApiKey;
-      document.getElementById('footballDataApiKey').value = Settings.footballDataApiKey;
-      document.getElementById('liveModeToggle').checked = Settings.liveMode;
-      settingsModal.classList.remove('hidden');
-    });
-    document.getElementById('settingsClose').addEventListener('click', () => settingsModal.classList.add('hidden'));
-    settingsModal.addEventListener('click', (e) => { if (e.target.id === 'settingsModal') settingsModal.classList.add('hidden'); });
-
-    document.getElementById('saveSettingsBtn').addEventListener('click', () => {
-      Settings.save(document.getElementById('oddsApiKey').value.trim(), document.getElementById('footballDataApiKey').value.trim(), document.getElementById('liveModeToggle').checked);
-      settingsModal.classList.add('hidden');
-      loadAllData();
-    });
-    document.getElementById('clearSettingsBtn').addEventListener('click', () => {
-      Settings.clear();
-      document.getElementById('oddsApiKey').value = '';
-      document.getElementById('footballDataApiKey').value = '';
-      document.getElementById('liveModeToggle').checked = false;
-    });
-
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { document.getElementById('matchModal').classList.add('hidden'); settingsModal.classList.add('hidden'); }
-    });
-  }
-
-  /* =========================================================================
-     11. INICIALIZACIÓN
-     ========================================================================= */
-  document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('safeModeToggle').checked = App.safeMode;
-    initEvents();
-    loadAllData();
+/* -------------------------------------------------------------------------
+   4. UTILIDADES ESTADÍSTICAS
+   ------------------------------------------------------------------------- */
+function mean(arr) { return arr.reduce((a, b) => a + b, 0) / arr.length; }
+function median(arr) {
+  const s = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 !== 0 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+function stdDev(arr) {
+  const m = mean(arr);
+  return Math.sqrt(mean(arr.map(x => (x - m) ** 2)));
+}
+function overUnderProb(arr, threshold) {
+  return arr.filter(x => x > threshold).length / arr.length;
+}
+function distributionCounts(arr, maxBucket) {
+  const counts = {};
+  for (let i = 0; i <= maxBucket; i++) counts[i] = 0;
+  let overflow = 0;
+  arr.forEach(v => {
+    if (v <= maxBucket) counts[v]++; else overflow++;
   });
+  if (overflow > 0) counts[`${maxBucket + 1}+`] = overflow;
+  return counts;
+}
+function pct(x) { return (x * 100).toFixed(1) + "%"; }
 
-})();
+/* -------------------------------------------------------------------------
+   5. RENDERIZADO
+   ------------------------------------------------------------------------- */
+const chartRegistry = {}; // guarda instancias Chart.js para poder destruirlas al re-simular
+
+function destroyChart(id) {
+  if (chartRegistry[id]) { chartRegistry[id].destroy(); delete chartRegistry[id]; }
+}
+
+function makeBarChart(canvasId, labels, datasets, yLabel) {
+  destroyChart(canvasId);
+  const ctx = document.getElementById(canvasId).getContext("2d");
+  chartRegistry[canvasId] = new Chart(ctx, {
+    type: "bar",
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: datasets.length > 1, labels: { color: "#e5e7eb" } }
+      },
+      scales: {
+        x: { ticks: { color: "#94a3b8" }, grid: { color: "#1f2937" } },
+        y: {
+          ticks: { color: "#94a3b8" },
+          grid: { color: "#1f2937" },
+          title: { display: !!yLabel, text: yLabel, color: "#94a3b8" }
+        }
+      }
+    }
+  });
+}
+
+function renderPlayerStatsTable(containerId, playerKey, position) {
+  const player = PLAYERS[playerKey];
+  const table = document.querySelector(`#${containerId} .player-stats-grid .player-stat-card:nth-child(${position}) .stats-table`);
+  const rows = [
+    ["% 1er servicio dentro", pct(player.firstServeIn)],
+    ["Puntos ganados 1er servicio", pct(player.firstServeWon)],
+    ["Puntos ganados 2do servicio", pct(player.secondServeWon)],
+    ["Aces / partido (aprox.)", player.acesPerMatch.toFixed(1)],
+    ["Dobles faltas / partido (aprox.)", player.dfPerMatch.toFixed(1)],
+    ["Break points salvados", pct(player.bpSaved)],
+    ["Break points convertidos", pct(player.bpConverted)],
+    ["Ajuste de forma en tierra", player.clayForm.toFixed(2) + "x"]
+  ];
+  table.innerHTML = rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join("");
+}
+
+function renderMatchResults(matchup, result) {
+  const container = document.querySelector(`#${matchup.containerId} .sim-results`);
+  const A = result.playerA, B = result.playerB;
+  const suffixId = matchup.containerId;
+
+  // -- Ordenar marcadores por frecuencia --
+  const sortedScores = Object.entries(result.scoreCounts).sort((a, b) => b[1] - a[1]);
+
+  // -- Estadísticas de juegos totales --
+  const gamesMean = mean(result.totalGamesArr);
+  const gamesMedian = median(result.totalGamesArr);
+  const gamesStd = stdDev(result.totalGamesArr);
+  const gameThresholds = [19.5, 20.5, 21.5, 22.5, 23.5, 24.5];
+
+  // -- Distribución de breaks --
+  const breakDistA = distributionCounts(result.breaksAArr, 4);
+  const breakDistB = distributionCounts(result.breaksBArr, 4);
+  const atLeastOneBreakA = result.breaksAArr.filter(x => x >= 1).length / result.n;
+  const atLeastOneBreakB = result.breaksBArr.filter(x => x >= 1).length / result.n;
+
+  // -- Aces --
+  const acesMeanA = mean(result.acesAArr);
+  const acesMeanB = mean(result.acesBArr);
+  const aceThresholdsA = [Math.round(acesMeanA) - 1.5, Math.round(acesMeanA) + 1.5].map(x=>Math.max(0.5,x));
+  const aceThresholdsB = [Math.round(acesMeanB) - 1.5, Math.round(acesMeanB) + 1.5].map(x=>Math.max(0.5,x));
+
+  container.innerHTML = `
+    <div class="result-block">
+      <h4>1. Probabilidad de ganador (${result.n.toLocaleString("es-ES")} simulaciones)</h4>
+      <table class="data-table">
+        <thead><tr><th>Jugador</th><th>Probabilidad</th></tr></thead>
+        <tbody>
+          <tr><td style="color:${A.color}">${A.name}</td><td>${pct(result.winProbA)}</td></tr>
+          <tr><td style="color:${B.color}">${B.name}</td><td>${pct(result.winProbB)}</td></tr>
+        </tbody>
+      </table>
+      <div class="chart-box"><canvas id="chart-winner-${suffixId}"></canvas></div>
+    </div>
+
+    <div class="result-block">
+      <h4>2. Distribución de marcadores</h4>
+      <table class="data-table">
+        <thead><tr><th>Resultado</th><th>Probabilidad</th></tr></thead>
+        <tbody>
+          ${sortedScores.map(([label, count]) => `<tr><td>${label}</td><td>${pct(count / result.n)}</td></tr>`).join("")}
+        </tbody>
+      </table>
+      <div class="chart-box"><canvas id="chart-scores-${suffixId}"></canvas></div>
+    </div>
+
+    <div class="result-block">
+      <h4>3. Juegos totales del partido</h4>
+      <div class="summary-line">
+        <div class="summary-pill">Media<b>${gamesMean.toFixed(1)}</b></div>
+        <div class="summary-pill">Mediana<b>${gamesMedian.toFixed(1)}</b></div>
+        <div class="summary-pill">Desv. estándar<b>${gamesStd.toFixed(2)}</b></div>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Mercado</th><th>Probabilidad</th></tr></thead>
+        <tbody>
+          ${gameThresholds.map(t => `<tr><td>Más de ${t} juegos</td><td>${pct(overUnderProb(result.totalGamesArr, t))}</td></tr>`).join("")}
+          <tr><td>Menos de ${gameThresholds[2]} juegos</td><td>${pct(1 - overUnderProb(result.totalGamesArr, gameThresholds[2]))}</td></tr>
+        </tbody>
+      </table>
+      <div class="chart-box"><canvas id="chart-games-${suffixId}"></canvas></div>
+    </div>
+
+    <div class="result-block">
+      <h4>4. Roturas de servicio</h4>
+      <div class="summary-line">
+        <div class="summary-pill" style="color:${A.color}">Media breaks ${A.name}<b>${mean(result.breaksAArr).toFixed(2)}</b></div>
+        <div class="summary-pill" style="color:${B.color}">Media breaks ${B.name}<b>${mean(result.breaksBArr).toFixed(2)}</b></div>
+        <div class="summary-pill">Al menos 1 break (${A.name})<b>${pct(atLeastOneBreakA)}</b></div>
+        <div class="summary-pill">Al menos 1 break (${B.name})<b>${pct(atLeastOneBreakB)}</b></div>
+      </div>
+      <div class="chart-box"><canvas id="chart-breaks-${suffixId}"></canvas></div>
+    </div>
+
+    <div class="result-block">
+      <h4>5. Aces</h4>
+      <div class="summary-line">
+        <div class="summary-pill" style="color:${A.color}">Media aces ${A.name}<b>${acesMeanA.toFixed(1)}</b></div>
+        <div class="summary-pill" style="color:${B.color}">Media aces ${B.name}<b>${acesMeanB.toFixed(1)}</b></div>
+      </div>
+      <table class="data-table">
+        <thead><tr><th>Mercado</th><th>Probabilidad</th></tr></thead>
+        <tbody>
+          <tr><td>${A.name} +${aceThresholdsA[0]} aces</td><td>${pct(overUnderProb(result.acesAArr, aceThresholdsA[0]))}</td></tr>
+          <tr><td>${A.name} +${aceThresholdsA[1]} aces</td><td>${pct(overUnderProb(result.acesAArr, aceThresholdsA[1]))}</td></tr>
+          <tr><td>${B.name} +${aceThresholdsB[0]} aces</td><td>${pct(overUnderProb(result.acesBArr, aceThresholdsB[0]))}</td></tr>
+          <tr><td>${B.name} +${aceThresholdsB[1]} aces</td><td>${pct(overUnderProb(result.acesBArr, aceThresholdsB[1]))}</td></tr>
+        </tbody>
+      </table>
+      <div class="chart-box"><canvas id="chart-aces-${suffixId}"></canvas></div>
+    </div>
+  `;
+
+  // -- Gráfico 1: ganador --
+  makeBarChart(`chart-winner-${suffixId}`,
+    [A.name, B.name],
+    [{ label: "Probabilidad de victoria (%)", data: [result.winProbA * 100, result.winProbB * 100], backgroundColor: [A.color, B.color] }],
+    "%"
+  );
+
+  // -- Gráfico 2: marcadores (top 4) --
+  const topScores = sortedScores.slice(0, 4);
+  makeBarChart(`chart-scores-${suffixId}`,
+    topScores.map(s => s[0]),
+    [{ label: "Probabilidad (%)", data: topScores.map(s => (s[1] / result.n) * 100), backgroundColor: "#facc15" }],
+    "%"
+  );
+
+  // -- Gráfico 3: juegos totales (histograma agrupado) --
+  const gameBuckets = {};
+  result.totalGamesArr.forEach(g => { gameBuckets[g] = (gameBuckets[g] || 0) + 1; });
+  const gameLabels = Object.keys(gameBuckets).map(Number).sort((a, b) => a - b);
+  makeBarChart(`chart-games-${suffixId}`,
+    gameLabels.map(String),
+    [{ label: "Frecuencia", data: gameLabels.map(l => gameBuckets[l]), backgroundColor: "#38bdf8" }],
+    "Nº de partidos"
+  );
+
+  // -- Gráfico 4: distribución de breaks --
+  const breakLabels = Object.keys(breakDistA);
+  makeBarChart(`chart-breaks-${suffixId}`,
+    breakLabels,
+    [
+      { label: A.name, data: breakLabels.map(k => breakDistA[k]), backgroundColor: A.color },
+      { label: B.name, data: breakLabels.map(k => breakDistB[k]), backgroundColor: B.color }
+    ],
+    "Nº de partidos"
+  );
+
+  // -- Gráfico 5: distribución de aces --
+  const maxAce = Math.max(...result.acesAArr, ...result.acesBArr, 10);
+  const aceDistA = distributionCounts(result.acesAArr, maxAce > 20 ? 20 : maxAce);
+  const aceDistB = distributionCounts(result.acesBArr, maxAce > 20 ? 20 : maxAce);
+  const aceLabels = Object.keys(aceDistA);
+  makeBarChart(`chart-aces-${suffixId}`,
+    aceLabels,
+    [
+      { label: A.name, data: aceLabels.map(k => aceDistA[k]), backgroundColor: A.color },
+      { label: B.name, data: aceLabels.map(k => aceDistB[k]), backgroundColor: B.color }
+    ],
+    "Nº de partidos"
+  );
+}
+
+/* -------------------------------------------------------------------------
+   6. EJECUCIÓN PRINCIPAL
+   ------------------------------------------------------------------------- */
+function runAllSimulations() {
+  const btn = document.getElementById("run-sim-btn");
+  const status = document.getElementById("sim-status");
+  btn.disabled = true;
+  status.textContent = "Simulando 20.000 partidos por enfrentamiento…";
+
+  // setTimeout permite que el navegador pinte el estado "simulando" antes del cálculo síncrono
+  setTimeout(() => {
+    MATCHUPS.forEach(matchup => {
+      const result = runMonteCarlo(matchup.p1, matchup.p2, N_SIMULATIONS);
+      renderMatchResults(matchup, result);
+    });
+    btn.disabled = false;
+    const now = new Date();
+    status.textContent = `Última simulación: ${now.toLocaleTimeString("es-ES")} · ${(N_SIMULATIONS * MATCHUPS.length).toLocaleString("es-ES")} partidos simulados en total`;
+  }, 50);
+}
+
+function renderMethodology() {
+  document.getElementById("methodology-content").innerHTML = `
+    <p><b>Estadísticas utilizadas por jugador:</b> % de primer servicio dentro, % de puntos ganados con 1er y 2do servicio, aces y dobles faltas por partido, % de break points salvados y convertidos, y un factor de ajuste por rendimiento reciente en tierra batida. Los datos de Tsitsipas, Rinderknech, Burruchaga y Mérida se obtuvieron de ATP Tour, TennisStats.com, MatchStat.com y TennisRatio.com (julio 2026); las cifras sin fuente exacta en tierra se estimaron a partir del rendimiento de temporada/carrera y se señalan como estimación en el código fuente.</p>
+    <p><b>Cómo se calcula la probabilidad de mantener el saque:</b> se combina el % de primeros servicios dentro con el % de puntos ganados en 1er y 2do servicio para obtener una probabilidad de ganar cada punto de saque. Esa probabilidad se ajusta con el factor de forma en tierra batida y luego se simula el juego punto a punto respetando las reglas de deuce/ventaja, de modo que el % de juegos de saque ganados emerge del propio modelo en lugar de fijarse a mano.</p>
+    <p><b>Cómo funciona la simulación Monte Carlo:</b> cada uno de los 20.000 partidos se genera punto a punto: se decide si el saque es dentro, si el punto termina en ace, y quién gana el punto según las probabilidades del jugador. Los puntos forman juegos, los juegos forman sets (con tie-break a 6-6) y los sets forman un partido a mejor de 3. Repetir esto 20.000 veces genera distribuciones realistas de sets, juegos totales, roturas y aces, sobre las que se calculan probabilidades de mercados de apuestas (líneas de más/menos).</p>
+    <p><b>Mercados con más valor aparente según la simulación:</b> en el partido de Gstaad, el servicio dominante de Rinderknech (~9.9 aces/partido) frente al mejor rendimiento global de Tsitsipas en tierra sugiere que el mercado de aces de Rinderknech y el hándicap de sets pueden ofrecer más valor que el ganador directo. En Umag, con dos jugadores de perfil más regular desde el fondo de pista, los mercados de "juegos totales" y "rotura de servicio conseguida" tienden a mostrar probabilidades más equilibradas y potencialmente más interesantes que el mercado de ganador. Estos resultados son ilustrativos: se recomienda contrastarlos con cuotas reales y no deben tomarse como recomendación de apuesta.</p>
+  `;
+}
+
+document.getElementById("run-sim-btn").addEventListener("click", runAllSimulations);
+
+// Inicialización al cargar la página
+document.addEventListener("DOMContentLoaded", () => {
+  renderPlayerStatsTable("match-1", "rinderknech", 1);
+  renderPlayerStatsTable("match-1", "tsitsipas", 2);
+  renderPlayerStatsTable("match-2", "burruchaga", 1);
+  renderPlayerStatsTable("match-2", "merida", 2);
+  renderMethodology();
+  runAllSimulations();
+});
