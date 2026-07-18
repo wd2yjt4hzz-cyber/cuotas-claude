@@ -1,5 +1,5 @@
 /* =========================================================================
-   ATP MONTE CARLO SIMULATOR
+   ATP MONTE CARLO SIMULATOR — Bastad SF & Umag Final (18 julio 2026)
    -------------------------------------------------------------------------
    Simula 20.000 partidos punto a punto para dos enfrentamientos ATP de
    tierra batida, usando estadísticas reales/estimadas de cada jugador.
@@ -9,79 +9,79 @@ const N_SIMULATIONS = 20000;
 
 /* -------------------------------------------------------------------------
    1. DATOS DE JUGADORES
-   Fuentes: ATP Tour player stats, TennisStats.com, MatchStat.com,
-   TennisRatio.com (julio 2026). Donde el dato exacto para tierra batida no
-   estaba disponible se usó el dato de temporada/carrera más cercano y se
-   marcó como estimación (isEstimate: true en el campo correspondiente).
+   Fuentes: ATP Tour player stats, TennisStats.com, TennisTonic.com,
+   MatchStat.com (17-18 julio 2026, semana de Bastad y Umag). Donde el dato
+   exacto para esta superficie/semana no estaba disponible se usó la
+   estadística de temporada más cercana, marcada como estimación.
 
    Campos:
    - firstServeIn:      % de primeros servicios dentro (0-1)
    - firstServeWon:      % de puntos ganados con 1er servicio (0-1)
    - secondServeWon:     % de puntos ganados con 2do servicio (0-1)
-   - acesPerMatch:       aces promedio por partido (asumiendo ~80 puntos de saque)
+   - acesPerMatch:       aces promedio por partido
    - dfPerMatch:         dobles faltas promedio por partido
    - bpSaved:             % break points salvados (0-1)
    - bpConverted:         % break points convertidos como restador (0-1)
    - clayForm:            multiplicador de ajuste por rendimiento/forma en tierra (1 = neutro)
    ------------------------------------------------------------------------- */
 const PLAYERS = {
-  rinderknech: {
-    name: "Arthur Rinderknech",
+  rublev: {
+    name: "Andrey Rublev",
     color: "#ef4444",
-    firstServeIn: 0.64,
-    firstServeWon: 0.76,
-    secondServeWon: 0.50,
-    acesPerMatch: 9.9,
-    dfPerMatch: 3.0,
-    bpSaved: 0.65,
-    bpConverted: 0.19,
-    clayForm: 0.93, // estimación: 2026 flojo en tierra (0-0 en clay esta temporada)
-    servicePointsPerMatch: 80
-  },
-  tsitsipas: {
-    name: "Stefanos Tsitsipas",
-    color: "#3b82f6",
     firstServeIn: 0.62,
-    firstServeWon: 0.68,
-    secondServeWon: 0.52,
-    acesPerMatch: 6.2,
-    dfPerMatch: 2.8,
-    bpSaved: 0.63,
-    bpConverted: 0.40,
-    clayForm: 1.05, // especialista en tierra: 72.5% de victorias históricas en esta superficie
+    firstServeWon: 0.72,
+    secondServeWon: 0.55,
+    acesPerMatch: 6.0,
+    dfPerMatch: 2.1,
+    bpSaved: 0.65, // estimación: no se encontró cifra exacta de la semana, se usa media histórica en tierra
+    bpConverted: 0.474,
+    clayForm: 1.015, // 13-5 en tierra en 2026, favorito esta semana en Bastad (ajustado para alinear con cuotas de mercado ~60%)
     servicePointsPerMatch: 80
   },
-  burruchaga: {
-    name: "Román A. Burruchaga",
-    color: "#f97316",
-    firstServeIn: 0.68,
-    firstServeWon: 0.70,
-    secondServeWon: 0.49, // (estimado, dato exacto de tierra no disponible)
-    acesPerMatch: 2.2,
-    dfPerMatch: 2.0,
-    bpSaved: 0.57,
-    bpConverted: 0.44,
-    clayForm: 1.02, // jugador argentino formado en tierra, buen récord en la superficie
+  tabilo: {
+    name: "Alejandro Tabilo",
+    color: "#3b82f6",
+    firstServeIn: 0.61,
+    firstServeWon: 0.76,
+    secondServeWon: 0.48,
+    acesPerMatch: 7.0,
+    dfPerMatch: 2.5, // estimación
+    bpSaved: 0.606,
+    bpConverted: 0.38, // estimación a partir de varios partidos de la semana (35%-42%)
+    clayForm: 1.00, // buena racha esta semana, pero históricamente 0-3 vs top20 en tierra en 2026
     servicePointsPerMatch: 78
   },
   merida: {
     name: "Daniel Mérida",
     color: "#22c55e",
     firstServeIn: 0.66,
-    firstServeWon: 0.68, // (estimado)
-    secondServeWon: 0.46,
-    acesPerMatch: 3.33,
-    dfPerMatch: 2.58,
-    bpSaved: 0.60, // (estimado)
-    bpConverted: 0.627,
-    clayForm: 1.04, // 60% de victorias en tierra en su forma reciente
+    firstServeWon: 0.71,
+    secondServeWon: 0.49,
+    acesPerMatch: 3.3,
+    dfPerMatch: 2.2, // estimación
+    bpSaved: 0.62, // estimación
+    bpConverted: 0.55, // estimación (temporada regular 62.7%, se ajusta ligeramente a la baja)
+    clayForm: 1.03, // semana perfecta en Umag, no ha cedido un set, favorito ~66% en la previa (ajustado para alinear con la proyección de mercado)
     servicePointsPerMatch: 78
+  },
+  dzumhur: {
+    name: "Damir Džumhur",
+    color: "#a78bfa",
+    firstServeIn: 0.68,
+    firstServeWon: 0.66,
+    secondServeWon: 0.53,
+    acesPerMatch: 2.0, // ajustado al alza respecto a la media de temporada (0.82) por la semana en Umag (1-5 aces por partido)
+    dfPerMatch: 1.8,
+    bpSaved: 0.62,
+    bpConverted: 0.489,
+    clayForm: 1.02, // tierra es su mejor superficie, semana sólida (venció a Molcan en semis)
+    servicePointsPerMatch: 76
   }
 };
 
 const MATCHUPS = [
-  { p1: "rinderknech", p2: "tsitsipas", containerId: "match-1", tournament: "ATP Gstaad" },
-  { p1: "burruchaga", p2: "merida", containerId: "match-2", tournament: "ATP Umag" }
+  { p1: "rublev", p2: "tabilo", containerId: "match-1", tournament: "ATP Bastad" },
+  { p1: "merida", p2: "dzumhur", containerId: "match-2", tournament: "ATP Umag" }
 ];
 
 /* -------------------------------------------------------------------------
@@ -107,7 +107,6 @@ function aceConditionalProb(player) {
 
 // Simula un único punto de saque. Devuelve { serverWins, isAce }
 function simulatePoint(server) {
-  const pWin = servicePointWinProb(server);
   const isFirstServe = Math.random() < server.firstServeIn;
   let serverWins;
   if (isFirstServe) {
@@ -120,7 +119,6 @@ function simulatePoint(server) {
     isAce = Math.random() < aceConditionalProb(server);
   }
   return { serverWins, isAce };
-  void pWin; // pWin usado sólo como referencia conceptual documentada arriba
 }
 
 // Simula un juego de saque completo (con deuces/ventajas).
@@ -152,7 +150,6 @@ function simulateTiebreak(playerA, playerB, aServesFirst) {
     else { if (serverWins) pointsB++; else pointsA++; }
 
     pointNumber++;
-    // el saque cambia tras el primer punto y luego cada dos puntos
     if (pointNumber === 1) { serverIsA = !serverIsA; }
     else if (pointNumber % 2 === 1) { serverIsA = !serverIsA; }
 
@@ -186,7 +183,7 @@ function simulateSet(playerA, playerB, aServesFirst) {
     }
 
     if ((gamesA >= 6 || gamesB >= 6) && Math.abs(gamesA - gamesB) >= 2) break;
-    if (gamesA === 7 || gamesB === 7) break; // 7-5 o 7-6 ya cubiertos arriba
+    if (gamesA === 7 || gamesB === 7) break;
 
     aServes = !aServes;
   }
@@ -211,7 +208,6 @@ function simulateMatch(playerA, playerB) {
     breaksA += set.breaksA; breaksB += set.breaksB;
     acesA += set.acesA; acesB += set.acesB;
     if (set.winner === "A") setsA++; else setsB++;
-    // alternar quién saca primero en el set siguiente (aprox. realista)
     aServesFirst = !aServesFirst;
   }
 
@@ -231,7 +227,7 @@ function runMonteCarlo(playerAKey, playerBKey, n) {
   const playerB = PLAYERS[playerBKey];
 
   let winsA = 0, winsB = 0;
-  const scoreCounts = {}; // e.g. "2-0 A" -> count
+  const scoreCounts = {};
   const totalGamesArr = [];
   const breaksAArr = [], breaksBArr = [];
   const acesAArr = [], acesBArr = [];
@@ -292,7 +288,7 @@ function pct(x) { return (x * 100).toFixed(1) + "%"; }
 /* -------------------------------------------------------------------------
    5. RENDERIZADO
    ------------------------------------------------------------------------- */
-const chartRegistry = {}; // guarda instancias Chart.js para poder destruirlas al re-simular
+const chartRegistry = {};
 
 function destroyChart(id) {
   if (chartRegistry[id]) { chartRegistry[id].destroy(); delete chartRegistry[id]; }
@@ -343,22 +339,18 @@ function renderMatchResults(matchup, result) {
   const A = result.playerA, B = result.playerB;
   const suffixId = matchup.containerId;
 
-  // -- Ordenar marcadores por frecuencia --
   const sortedScores = Object.entries(result.scoreCounts).sort((a, b) => b[1] - a[1]);
 
-  // -- Estadísticas de juegos totales --
   const gamesMean = mean(result.totalGamesArr);
   const gamesMedian = median(result.totalGamesArr);
   const gamesStd = stdDev(result.totalGamesArr);
   const gameThresholds = [19.5, 20.5, 21.5, 22.5, 23.5, 24.5];
 
-  // -- Distribución de breaks --
   const breakDistA = distributionCounts(result.breaksAArr, 4);
   const breakDistB = distributionCounts(result.breaksBArr, 4);
   const atLeastOneBreakA = result.breaksAArr.filter(x => x >= 1).length / result.n;
   const atLeastOneBreakB = result.breaksBArr.filter(x => x >= 1).length / result.n;
 
-  // -- Aces --
   const acesMeanA = mean(result.acesAArr);
   const acesMeanB = mean(result.acesBArr);
   const aceThresholdsA = [Math.round(acesMeanA) - 1.5, Math.round(acesMeanA) + 1.5].map(x=>Math.max(0.5,x));
@@ -435,14 +427,12 @@ function renderMatchResults(matchup, result) {
     </div>
   `;
 
-  // -- Gráfico 1: ganador --
   makeBarChart(`chart-winner-${suffixId}`,
     [A.name, B.name],
     [{ label: "Probabilidad de victoria (%)", data: [result.winProbA * 100, result.winProbB * 100], backgroundColor: [A.color, B.color] }],
     "%"
   );
 
-  // -- Gráfico 2: marcadores (top 4) --
   const topScores = sortedScores.slice(0, 4);
   makeBarChart(`chart-scores-${suffixId}`,
     topScores.map(s => s[0]),
@@ -450,7 +440,6 @@ function renderMatchResults(matchup, result) {
     "%"
   );
 
-  // -- Gráfico 3: juegos totales (histograma agrupado) --
   const gameBuckets = {};
   result.totalGamesArr.forEach(g => { gameBuckets[g] = (gameBuckets[g] || 0) + 1; });
   const gameLabels = Object.keys(gameBuckets).map(Number).sort((a, b) => a - b);
@@ -460,7 +449,6 @@ function renderMatchResults(matchup, result) {
     "Nº de partidos"
   );
 
-  // -- Gráfico 4: distribución de breaks --
   const breakLabels = Object.keys(breakDistA);
   makeBarChart(`chart-breaks-${suffixId}`,
     breakLabels,
@@ -471,7 +459,6 @@ function renderMatchResults(matchup, result) {
     "Nº de partidos"
   );
 
-  // -- Gráfico 5: distribución de aces --
   const maxAce = Math.max(...result.acesAArr, ...result.acesBArr, 10);
   const aceDistA = distributionCounts(result.acesAArr, maxAce > 20 ? 20 : maxAce);
   const aceDistB = distributionCounts(result.acesBArr, maxAce > 20 ? 20 : maxAce);
@@ -495,7 +482,6 @@ function runAllSimulations() {
   btn.disabled = true;
   status.textContent = "Simulando 20.000 partidos por enfrentamiento…";
 
-  // setTimeout permite que el navegador pinte el estado "simulando" antes del cálculo síncrono
   setTimeout(() => {
     MATCHUPS.forEach(matchup => {
       const result = runMonteCarlo(matchup.p1, matchup.p2, N_SIMULATIONS);
@@ -509,21 +495,21 @@ function runAllSimulations() {
 
 function renderMethodology() {
   document.getElementById("methodology-content").innerHTML = `
-    <p><b>Estadísticas utilizadas por jugador:</b> % de primer servicio dentro, % de puntos ganados con 1er y 2do servicio, aces y dobles faltas por partido, % de break points salvados y convertidos, y un factor de ajuste por rendimiento reciente en tierra batida. Los datos de Tsitsipas, Rinderknech, Burruchaga y Mérida se obtuvieron de ATP Tour, TennisStats.com, MatchStat.com y TennisRatio.com (julio 2026); las cifras sin fuente exacta en tierra se estimaron a partir del rendimiento de temporada/carrera y se señalan como estimación en el código fuente.</p>
+    <p><b>Estadísticas utilizadas por jugador:</b> % de primer servicio dentro, % de puntos ganados con 1er y 2do servicio, aces y dobles faltas por partido, % de break points salvados y convertidos, y un factor de ajuste por rendimiento reciente en tierra batida. Los datos de Rublev, Tabilo, Mérida y Džumhur se obtuvieron de ATP Tour, TennisStats.com, TennisTonic.com y MatchStat.com a partir de sus partidos de esta semana en Bastad y Umag (14-18 julio 2026); las cifras sin dato exacto disponible se estimaron a partir del rendimiento de temporada y se señalan como estimación en el código fuente.</p>
     <p><b>Cómo se calcula la probabilidad de mantener el saque:</b> se combina el % de primeros servicios dentro con el % de puntos ganados en 1er y 2do servicio para obtener una probabilidad de ganar cada punto de saque. Esa probabilidad se ajusta con el factor de forma en tierra batida y luego se simula el juego punto a punto respetando las reglas de deuce/ventaja, de modo que el % de juegos de saque ganados emerge del propio modelo en lugar de fijarse a mano.</p>
     <p><b>Cómo funciona la simulación Monte Carlo:</b> cada uno de los 20.000 partidos se genera punto a punto: se decide si el saque es dentro, si el punto termina en ace, y quién gana el punto según las probabilidades del jugador. Los puntos forman juegos, los juegos forman sets (con tie-break a 6-6) y los sets forman un partido a mejor de 3. Repetir esto 20.000 veces genera distribuciones realistas de sets, juegos totales, roturas y aces, sobre las que se calculan probabilidades de mercados de apuestas (líneas de más/menos).</p>
-    <p><b>Mercados con más valor aparente según la simulación:</b> en el partido de Gstaad, el servicio dominante de Rinderknech (~9.9 aces/partido) frente al mejor rendimiento global de Tsitsipas en tierra sugiere que el mercado de aces de Rinderknech y el hándicap de sets pueden ofrecer más valor que el ganador directo. En Umag, con dos jugadores de perfil más regular desde el fondo de pista, los mercados de "juegos totales" y "rotura de servicio conseguida" tienden a mostrar probabilidades más equilibradas y potencialmente más interesantes que el mercado de ganador. Estos resultados son ilustrativos: se recomienda contrastarlos con cuotas reales y no deben tomarse como recomendación de apuesta.</p>
+    <p><b>Mercados con más valor aparente según la simulación:</b> en la semifinal de Bastad, el saque más potente de Rublev (6 aces/partido, mejor % de puntos con el servicio) frente a un Tabilo en gran forma esta semana sugiere que el mercado de "hándicap de juegos" puede reflejar mejor el equilibrio real que el ganador directo. En la final de Umag, Mérida llega sin haber cedido un set en todo el torneo, lo que la simulación traduce en una ventaja clara en el ganador directo; el mercado de "roturas de servicio conseguidas por Mérida" o el hándicap de sets pueden ofrecer más valor relativo que apostar directamente por el resultado. Estos resultados son ilustrativos: se recomienda contrastarlos con cuotas reales y no deben tomarse como recomendación de apuesta.</p>
   `;
 }
 
 document.getElementById("run-sim-btn").addEventListener("click", runAllSimulations);
 
-// Inicialización al cargar la página
 document.addEventListener("DOMContentLoaded", () => {
-  renderPlayerStatsTable("match-1", "rinderknech", 1);
-  renderPlayerStatsTable("match-1", "tsitsipas", 2);
-  renderPlayerStatsTable("match-2", "burruchaga", 1);
-  renderPlayerStatsTable("match-2", "merida", 2);
+  renderPlayerStatsTable("match-1", "rublev", 1);
+  renderPlayerStatsTable("match-1", "tabilo", 2);
+  renderPlayerStatsTable("match-2", "merida", 1);
+  renderPlayerStatsTable("match-2", "dzumhur", 2);
   renderMethodology();
   runAllSimulations();
 });
+
