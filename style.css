@@ -1,27 +1,27 @@
+Aquí tienes el `style.css` de la última versión (Rublev-Tabilo / Mérida-Džumhur):
+
+```css
 :root {
   --bg: #0f172a;
   --card: #111827;
   --card-border: #1f2937;
   --text: #e5e7eb;
   --text-dim: #94a3b8;
-  --tsitsipas: #3b82f6;
-  --rinderknech: #ef4444;
+  --rublev: #ef4444;
+  --tabilo: #3b82f6;
   --merida: #22c55e;
-  --burruchaga: #f97316;
+  --dzumhur: #a78bfa;
   --accent: #facc15;
   --radius: 14px;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   line-height: 1.5;
 }
 
@@ -31,22 +31,10 @@ body {
   background: linear-gradient(180deg, #0b1220 0%, var(--bg) 100%);
 }
 
-.header-inner {
-  max-width: 1100px;
-  margin: 0 auto;
-}
+.header-inner { max-width: 1100px; margin: 0 auto; }
 
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.logo-mark {
-  color: var(--accent);
-  font-size: 12px;
-  letter-spacing: 4px;
-}
+.logo { display: flex; align-items: center; gap: 12px; }
+.logo-mark { color: var(--accent); font-size: 12px; letter-spacing: 4px; }
 
 .site-header h1 {
   font-size: clamp(24px, 4vw, 34px);
@@ -54,23 +42,11 @@ body {
   font-weight: 800;
   letter-spacing: -0.5px;
 }
+.site-header h1 span { color: var(--accent); font-weight: 800; }
 
-.site-header h1 span {
-  color: var(--accent);
-  font-weight: 800;
-}
+.tagline { color: var(--text-dim); margin: 10px 0 0; font-size: 15px; }
 
-.tagline {
-  color: var(--text-dim);
-  margin: 10px 0 0;
-  font-size: 15px;
-}
-
-main {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 24px 20px 60px;
-}
+main { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
 
 .disclaimer {
   background: #1e293b;
@@ -81,7 +57,6 @@ main {
   color: var(--text-dim);
   margin-bottom: 28px;
 }
-
 .tag-est {
   background: rgba(250, 204, 21, 0.15);
   color: var(--accent);
@@ -99,10 +74,7 @@ main {
   margin-bottom: 32px;
 }
 
-.match-card-header {
-  margin-bottom: 20px;
-}
-
+.match-card-header { margin-bottom: 20px; }
 .tournament {
   display: inline-block;
   font-size: 12px;
@@ -115,34 +87,16 @@ main {
   border-radius: 20px;
   margin-bottom: 10px;
 }
-
 .match-card-header h2 {
   margin: 8px 0 0;
   font-size: clamp(19px, 3vw, 25px);
 }
+.vs { color: var(--text-dim); font-weight: 400; margin: 0 8px; font-size: 0.75em; }
 
-.vs {
-  color: var(--text-dim);
-  font-weight: 400;
-  margin: 0 8px;
-  font-size: 0.75em;
-}
-
-#match-1 .p1-name {
-  color: var(--rinderknech);
-}
-
-#match-1 .p2-name {
-  color: var(--tsitsipas);
-}
-
-#match-2 .p1-name {
-  color: var(--burruchaga);
-}
-
-#match-2 .p2-name {
-  color: var(--merida);
-}
+#match-1 .p1-name { color: var(--rublev); }
+#match-1 .p2-name { color: var(--tabilo); }
+#match-2 .p1-name { color: var(--merida); }
+#match-2 .p2-name { color: var(--dzumhur); }
 
 .player-stats-grid {
   display: grid;
@@ -150,11 +104,8 @@ main {
   gap: 16px;
   margin-bottom: 24px;
 }
-
 @media (max-width: 640px) {
-  .player-stats-grid {
-    grid-template-columns: 1fr;
-  }
+  .player-stats-grid { grid-template-columns: 1fr; }
 }
 
 .player-stat-card {
@@ -164,52 +115,23 @@ main {
   border-radius: 10px;
   padding: 16px;
 }
+#match-1 .p1-border { border-left-color: var(--rublev); }
+#match-1 .p2-border { border-left-color: var(--tabilo); }
+#match-2 .p1-border { border-left-color: var(--merida); }
+#match-2 .p2-border { border-left-color: var(--dzumhur); }
 
-#match-1 .p1-border {
-  border-left-color: var(--rinderknech);
-}
+.player-stat-card h3 { margin: 0 0 10px; font-size: 15px; }
 
-#match-1 .p2-border {
-  border-left-color: var(--tsitsipas);
-}
-
-#match-2 .p1-border {
-  border-left-color: var(--burruchaga);
-}
-
-#match-2 .p2-border {
-  border-left-color: var(--merida);
-}
-
-.player-stat-card h3 {
-  margin: 0 0 10px;
-  font-size: 15px;
-}.stats-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.stats-table td {
-  padding: 4px 0;
-  border-bottom: 1px solid var(--card-border);
-}
-
-.stats-table td:first-child {
-  color: var(--text-dim);
-}
-
-.stats-table td:last-child {
-  text-align: right;
-  font-weight: 600;
-}
+.stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.stats-table td { padding: 4px 0; border-bottom: 1px solid var(--card-border); }
+.stats-table td:first-child { color: var(--text-dim); }
+.stats-table td:last-child { text-align: right; font-weight: 600; }
 
 .result-block {
   margin-top: 22px;
   padding-top: 20px;
   border-top: 1px solid var(--card-border);
 }
-
 .result-block h4 {
   margin: 0 0 12px;
   font-size: 14px;
@@ -218,50 +140,19 @@ main {
   color: var(--text-dim);
 }
 
-table.data-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 16px;
-  font-size: 14px;
-}
+table.data-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 14px; }
+table.data-table th, table.data-table td { padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--card-border); }
+table.data-table th { color: var(--text-dim); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+table.data-table td:last-child, table.data-table th:last-child { text-align: right; }
 
-table.data-table th,
-table.data-table td {
-  padding: 8px 10px;
-  text-align: left;
-  border-bottom: 1px solid var(--card-border);
-}
-
-table.data-table th {
-  color: var(--text-dim);
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-}
-
-table.data-table td:last-child,
-table.data-table th:last-child {
-  text-align: right;
-}
-
-.summary-line {
-  display: flex;
-  gap: 20px;
-  flex-wrap: wrap;
-  margin-bottom: 14px;
-}
-
+.summary-line { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 14px; }
 .summary-pill {
   background: #1e293b;
   border-radius: 8px;
   padding: 8px 14px;
   font-size: 13px;
 }
-
-.summary-pill b {
-  display: block;
-  font-size: 16px;
-}
+.summary-pill b { display: block; font-size: 16px; }
 
 .chart-grid {
   display: grid;
@@ -269,13 +160,9 @@ table.data-table th:last-child {
   gap: 20px;
   margin-top: 8px;
 }
-
 @media (max-width: 640px) {
-  .chart-grid {
-    grid-template-columns: 1fr;
-  }
+  .chart-grid { grid-template-columns: 1fr; }
 }
-
 .chart-box {
   background: #0b1220;
   border: 1px solid var(--card-border);
@@ -283,16 +170,12 @@ table.data-table th:last-child {
   padding: 14px;
   height: 260px;
 }
-
-.chart-box canvas {
-  max-height: 100%;
-}
+.chart-box canvas { max-height: 100%; }
 
 .controls {
   text-align: center;
   margin: 36px 0;
 }
-
 #run-sim-btn {
   background: var(--accent);
   color: #1a1a0a;
@@ -304,24 +187,9 @@ table.data-table th:last-child {
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-
-#run-sim-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(250, 204, 21, 0.25);
-}
-
-#run-sim-btn:disabled {
-  opacity: 0.6;
-  cursor: wait;
-  transform: none;
-}
-
-#sim-status {
-  display: block;
-  margin-top: 10px;
-  color: var(--text-dim);
-  font-size: 13px;
-}
+#run-sim-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(250,204,21,0.25); }
+#run-sim-btn:disabled { opacity: 0.6; cursor: wait; transform: none; }
+#sim-status { display: block; margin-top: 10px; color: var(--text-dim); font-size: 13px; }
 
 .methodology {
   background: var(--card);
@@ -329,21 +197,9 @@ table.data-table th:last-child {
   border-radius: var(--radius);
   padding: 24px;
 }
-
-.methodology h2 {
-  margin-top: 0;
-  font-size: 19px;
-}
-
-.methodology p,
-.methodology li {
-  color: var(--text-dim);
-  font-size: 14px;
-}
-
-.methodology b {
-  color: var(--text);
-}
+.methodology h2 { margin-top: 0; font-size: 19px; }
+.methodology p, .methodology li { color: var(--text-dim); font-size: 14px; }
+.methodology b { color: var(--text); }
 
 footer {
   text-align: center;
@@ -351,4 +207,4 @@ footer {
   font-size: 12.5px;
   padding: 24px 20px 40px;
 }
-
+```
